@@ -1,80 +1,75 @@
+import asyncio
+import logging
+import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from db import SessionLocal, Vault, VaultMessage, init_db
 
-app = FastAPI()
+from config import get_settings
+from db import SessionLocal, init_db
+from logging_config import setup_logging
+from middleware.security import SecurityHeadersMiddleware
+from routers import access, auth, beneficiaries, health, heartbeat, shares, stats, trigger, vault
+from services.heartbeat_checker import check_heartbeat
 
+settings = get_settings()
+
+setup_logging()
+logger = logging.getLogger("legacylock")
+
+HEARTBEAT_CHECK_INTERVAL = int(os.environ.get("HEARTBEAT_CHECK_INTERVAL", "3600"))
+
+
+async def _heartbeat_loop() -> None:
+    """Background task that periodically checks heartbeat inactivity."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_CHECK_INTERVAL)
+        try:
+            db = SessionLocal()
+            try:
+                result = check_heartbeat(db)
+                if result:
+                    logger.warning("Heartbeat check result: %s", result)
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Heartbeat check failed")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    init_db()
+    task = asyncio.create_task(_heartbeat_loop())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="LegacyLock API", lifespan=lifespan)
+
+# Security headers FIRST (before CORS)
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://10.2.0.2:3000",
-    ],
+    allow_origins=settings.allowed_origins.split(","),
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-init_db()
-
-
-class MessageRequest(BaseModel):
-    label: str
-    encrypted_content: str
-
-
-@app.post("/vault/messages")
-def save_message(data: MessageRequest):
-    db = SessionLocal()
-
-    vault = db.query(Vault).first()
-    if not vault:
-        vault = Vault()
-        db.add(vault)
-        db.commit()
-        db.refresh(vault)
-
-    message = VaultMessage(
-        vault_id=vault.id,
-        label=data.label,
-        encrypted_content=data.encrypted_content,
-    )
-    db.add(message)
-    db.commit()
-    db.close()
-
-    return {"message": "Message saved"}
-
-
-@app.get("/vault/messages")
-def list_messages():
-    db = SessionLocal()
-    messages = db.query(VaultMessage).all()
-    db.close()
-
-    return [
-        {
-            "id": m.id,
-            "label": m.label,
-            "created_at": m.created_at,
-        }
-        for m in messages
-    ]
-
-
-@app.get("/vault/messages/{message_id}")
-def load_message(message_id: int):
-    db = SessionLocal()
-    message = db.query(VaultMessage).filter_by(id=message_id).first()
-    db.close()
-
-    if not message:
-        return {"error": "Not found"}
-
-    return {
-        "id": message.id,
-        "label": message.label,
-        "encrypted_content": message.encrypted_content
-    }
+# Register routers
+app.include_router(health.router)
+app.include_router(auth.router)
+app.include_router(vault.router)
+app.include_router(beneficiaries.router)
+app.include_router(heartbeat.router)
+app.include_router(stats.router)
+app.include_router(trigger.router)
+app.include_router(shares.router)
+app.include_router(shares.public_router)
+app.include_router(access.public_router)
+app.include_router(access.router)
+app.include_router(access.owner_router)
