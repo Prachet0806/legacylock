@@ -28,13 +28,14 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 
 def _get_jwt_secret() -> str:
+    """Return JWT secret, failing closed if misconfigured (no test fallback)."""
     try:
         secret = get_settings().session_secret
-        if secret and len(secret) >= 16:
-            return secret
-    except Exception:
-        pass
-    return "test-secret-key-for-testing-only-32b"
+    except Exception as exc:
+        raise RuntimeError("SESSION_SECRET is not configured") from exc
+    if not secret or len(secret) < 32:
+        raise RuntimeError("SESSION_SECRET must be at least 32 characters")
+    return secret
 
 
 def hash_password(password: str) -> str:
@@ -62,8 +63,10 @@ def generate_refresh_token_hash() -> tuple[str, str]:
     return hash_token(token), token
 
 
-def create_access_token(user_id: int, vault_id: int, role: str = "owner") -> str:
-    """Create a short-lived JWT access token."""
+def create_access_token(user_id: int, vault_id: int, role: str) -> str:
+    """Create a short-lived JWT access token. Role is required (no default)."""
+    if role not in ("owner", "beneficiary"):
+        raise ValueError("role must be 'owner' or 'beneficiary'")
     now = datetime.now(UTC)
     expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
@@ -85,6 +88,7 @@ def create_refresh_token(user_id: int, vault_id: int, db: Session) -> tuple[str,
 
     refresh_token = RefreshToken(
         user_id=user_id,
+        vault_id=vault_id,
         token_hash=token_hash,
         family_id=family_id,
         expires_at=expires_at,
@@ -105,12 +109,14 @@ def rotate_refresh_token(refresh_token: RefreshToken, db: Session) -> str:
     token_hash, token = generate_refresh_token_hash()
     new_refresh = RefreshToken(
         user_id=refresh_token.user_id,
+        vault_id=refresh_token.vault_id,
         token_hash=token_hash,
         family_id=refresh_token.family_id,
         expires_at=datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
         replaced_by=None,
     )
     db.add(new_refresh)
+    db.flush()  # populate new_refresh.id before linking
 
     # Link old to new
     refresh_token.replaced_by = new_refresh.id
@@ -121,31 +127,48 @@ def rotate_refresh_token(refresh_token: RefreshToken, db: Session) -> str:
     return token
 
 
+class RefreshReuseError(Exception):
+    """Raised when a revoked (already-rotated) refresh token is presented."""
+
+
 def verify_refresh_token(token: str, db: Session) -> Optional[RefreshToken]:
-    """Verify a refresh token via SHA-256 hash lookup in O(1) time."""
+    """Verify a refresh token via SHA-256 hash lookup in O(1) time.
+
+    Raises RefreshReuseError if a revoked-but-replaced token is presented
+    (possible theft) so callers can revoke the whole family.
+    """
     token_h = hash_token(token)
     candidate = db.query(RefreshToken).filter(
         RefreshToken.token_hash == token_h,
-        RefreshToken.revoked_at.is_(None),
-        RefreshToken.expires_at > datetime.now(UTC),
     ).first()
 
-    if candidate:
-        return candidate
+    if candidate is None:
+        # Legacy fallback: in case older refresh tokens were hashed with argon2
+        legacy = (
+            db.query(RefreshToken)
+            .filter(
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.expires_at > datetime.now(UTC),
+            )
+            .all()
+        )
+        for rt in legacy:
+            if rt.token_hash.startswith("$argon2"):
+                try:
+                    if verify_password(token, rt.token_hash):
+                        return rt
+                except Exception:
+                    continue
+        return None
 
-    # Legacy fallback: in case older refresh tokens were hashed with argon2
-    candidates = db.query(RefreshToken).filter(
-        RefreshToken.revoked_at.is_(None),
-        RefreshToken.expires_at > datetime.now(UTC),
-    ).all()
-    for rt in candidates:
-        if rt.token_hash.startswith("$argon2"):
-            try:
-                if verify_password(token, rt.token_hash):
-                    return rt
-            except Exception:
-                continue
-    return None
+    if candidate.revoked_at is not None:
+        # Reuse of a rotated/compromised token — signal theft.
+        if candidate.replaced_by is not None:
+            raise RefreshReuseError(candidate.family_id)
+        return None
+    if candidate.expires_at <= datetime.now(UTC):
+        return None
+    return candidate
 
 
 def revoke_refresh_token_family(family_id: str, db: Session) -> None:
@@ -160,13 +183,17 @@ def revoke_refresh_token_family(family_id: str, db: Session) -> None:
 
 
 def decode_access_token(token: str) -> Optional[dict]:
-    """Decode and validate an access token using configured secret or test fallback."""
-    secrets_to_try = [_get_jwt_secret(), "test-secret-key", "test-secret-key-for-testing-only-32b"]
-    for s in secrets_to_try:
-        try:
-            payload = jwt.decode(token, s, algorithms=[JWT_ALGORITHM, "HS256"])
-            if payload.get("type") == "access":
-                return payload
-        except jwt.PyJWTError:
-            continue
+    """Decode and validate an access token using configured secret."""
+    try:
+        secret = _get_jwt_secret()
+        payload = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            return None
+        if payload.get("role") not in ("owner", "beneficiary"):
+            return None
+        if "sub" not in payload or "vault_id" not in payload:
+            return None
+        return payload
+    except (jwt.PyJWTError, RuntimeError):
+        pass
     return None

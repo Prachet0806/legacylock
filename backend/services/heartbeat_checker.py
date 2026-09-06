@@ -24,21 +24,64 @@ def _utc(dt: datetime) -> datetime:
     return dt
 
 
-def _get_vault(db: Session) -> Vault:
-    """Get the vault (assuming single vault)."""
-    vault = db.query(Vault).first()
-    if not vault:
-        raise ValueError("Vault not found")
-    return vault
+def _elapsed_days(since: datetime, now: datetime) -> float:
+    return (_utc(now) - _utc(since)).total_seconds() / 86400.0
 
 
-def _get_vault_status(db: Session) -> VaultStatus:
-    vault = _get_vault(db)
-    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
+def _schedule_coro(coro) -> None:
+    """Best-effort in-process scheduling that never crashes sync callers.
+
+    If a loop is running (uvicorn heartbeat task), schedule on it.
+    Otherwise (tests/CLI), run inline to completion.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        try:
+            loop.create_task(coro)
+            return
+        except RuntimeError:
+            pass
+    try:
+        asyncio.run(coro)
+    except RuntimeError:
+        # Already in a loop edge-case: fall back to fire-and-forget via new loop
+        try:
+            import threading
+
+            def _runner() -> None:
+                try:
+                    asyncio.run(coro)
+                except Exception:
+                    logger.exception("Background notification failed")
+
+            threading.Thread(target=_runner, daemon=True).start()
+        except Exception:
+            logger.exception("Background notification failed")
+    except Exception:
+        logger.exception("Background notification failed")
+
+
+def _get_vaults(db: Session) -> list[Vault]:
+    """Get all vaults that have heartbeat configured."""
+    return db.query(Vault).join(HeartbeatConfig).all()
+
+
+def _get_vault_status(db: Session, vault_id: int) -> VaultStatus:
+    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault_id).first()
     if not vs:
-        vs = VaultStatus(vault_id=vault.id, state="active")
+        vs = VaultStatus(vault_id=vault_id, state="active")
         db.add(vs)
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault_id).first()
+            if not vs:
+                raise
+            return vs
         db.refresh(vs)
     return vs
 
@@ -72,46 +115,59 @@ def _log_notification(
     db.commit()
 
 
-async def _auto_approve_access_requests(db: Session, vault_id: int) -> None:
-    """Auto-approve all pending access requests when vault is triggered."""
+def _auto_approve_access_requests_sync(db: Session, vault_id: int) -> int:
+    """Auto-approve all pending access requests (sync, in-process). Returns count."""
     from services.notifications import send_email
-    
+
     pending_requests = db.query(AccessRequest).filter(
         AccessRequest.vault_id == vault_id,
         AccessRequest.status == "pending"
     ).all()
-    
+
     for req in pending_requests:
         req.status = "approved"
         req.approved_at = datetime.now(UTC)
         req.expires_at = datetime.now(UTC) + timedelta(days=30)
-        
-        # Notify beneficiary
-        asyncio.get_event_loop().create_task(
-            send_email(
-                req.beneficiary.email,
-                "LegacyLock — Access Granted (Vault Triggered)",
-                f"The vault has been triggered. Your access request has been automatically approved. "
-                f"You can now submit your share to reconstruct the vault key.",
+        try:
+            email = req.beneficiary.email if req.beneficiary else None
+        except Exception:
+            email = None
+        if email:
+            _schedule_coro(
+                send_email(
+                    email,
+                    "LegacyLock — Access Granted (Vault Triggered)",
+                    "The vault has been triggered. Your access request has been automatically approved. "
+                    "You can now submit your share to reconstruct the vault key.",
+                )
             )
-        )
-    
+
     if pending_requests:
         db.commit()
+    return len(pending_requests)
+
+
+async def _auto_approve_access_requests(db: Session, vault_id: int) -> None:
+    """Async wrapper (legacy). Delegates to sync version."""
+    _auto_approve_access_requests_sync(db, vault_id)
 
 
 def _send_grace_notifications(db: Session, vault_id: int, cfg: HeartbeatConfig, vs: VaultStatus) -> None:
     """Send escalating notifications during grace period."""
     from services.notifications import send_email, send_sms
 
+    if not vs.grace_started_at:
+        return
     now = datetime.now(UTC)
-    grace_elapsed = (now - _utc(vs.grace_started_at)).days
+    grace_elapsed = _elapsed_days(vs.grace_started_at, now)
     beneficiaries = db.query(Beneficiary).filter(Beneficiary.vault_id == vault_id).all()
+    if not beneficiaries:
+        return
 
-    # Day 0–1: First warning to user
+    # Day 0+: First warning (once)
     if grace_elapsed >= 0 and not _has_notification(db, vault_id, "grace_warn_1"):
         for b in beneficiaries:
-            asyncio.get_event_loop().create_task(
+            _schedule_coro(
                 send_email(
                     b.email,
                     "LegacyLock — Inactivity Warning",
@@ -122,24 +178,25 @@ def _send_grace_notifications(db: Session, vault_id: int, cfg: HeartbeatConfig, 
             _log_notification(db, vault_id, "grace_warn_1", b.email, "email", b.id)
         logger.info("Sent grace_warn_1 to %d beneficiaries", len(beneficiaries))
 
-    # Day 3: Second warning
-    if grace_elapsed >= 3 and not _has_notification(db, vault_id, "grace_warn_2"):
+    # Day 3+: Second warning (once, only if grace period long enough)
+    if grace_elapsed >= 3 and cfg.grace_days > 3 and not _has_notification(db, vault_id, "grace_warn_2"):
         for b in beneficiaries:
-            asyncio.get_event_loop().create_task(
+            remaining = max(0, cfg.grace_days - int(grace_elapsed))
+            _schedule_coro(
                 send_email(
                     b.email,
                     "LegacyLock — Vault Release Approaching",
-                    f"The vault owner has been inactive for {cfg.interval_days + grace_elapsed} days. "
-                    f"Release will occur in {cfg.grace_days - grace_elapsed} days.",
+                    f"The vault owner has been inactive for {cfg.interval_days + int(grace_elapsed)} days. "
+                    f"Release will occur in {remaining} days.",
                 )
             )
             _log_notification(db, vault_id, "grace_warn_2", b.email, "email", b.id)
         logger.info("Sent grace_warn_2 to %d beneficiaries", len(beneficiaries))
 
-    # Grace - 1 day: Final warning
-    if grace_elapsed >= cfg.grace_days - 1 and not _has_notification(db, vault_id, "final_warn"):
+    # Final 24h warning (once)
+    if grace_elapsed >= max(0, cfg.grace_days - 1) and not _has_notification(db, vault_id, "final_warn"):
         for b in beneficiaries:
-            asyncio.get_event_loop().create_task(
+            _schedule_coro(
                 send_email(
                     b.email,
                     "LegacyLock — FINAL WARNING — Vault Releasing Soon",
@@ -150,7 +207,7 @@ def _send_grace_notifications(db: Session, vault_id: int, cfg: HeartbeatConfig, 
             _log_notification(db, vault_id, "final_warn", b.email, "email", b.id)
             # Also send SMS if phone is available
             if b.phone:
-                asyncio.get_event_loop().create_task(
+                _schedule_coro(
                     send_sms(b.phone, "LegacyLock: Vault releasing in 24 hours. Check your email for details.")
                 )
                 _log_notification(db, vault_id, "final_warn", b.phone, "sms", b.id)
@@ -162,9 +219,11 @@ def _send_trigger_notifications(db: Session, vault_id: int) -> None:
     from services.notifications import send_email, send_sms
 
     beneficiaries = db.query(Beneficiary).filter(Beneficiary.vault_id == vault_id).all()
+    if not beneficiaries:
+        return
     for b in beneficiaries:
         if not _has_notification(db, vault_id, f"triggered_{b.id}", b.id):
-            asyncio.get_event_loop().create_task(
+            _schedule_coro(
                 send_email(
                     b.email,
                     "LegacyLock — Vault Access Released",
@@ -175,63 +234,66 @@ def _send_trigger_notifications(db: Session, vault_id: int) -> None:
             )
             _log_notification(db, vault_id, f"triggered_{b.id}", b.email, "email", b.id)
             if b.phone:
-                asyncio.get_event_loop().create_task(
+                _schedule_coro(
                     send_sms(b.phone, "LegacyLock: Vault access has been released. Check your email.")
                 )
                 _log_notification(db, vault_id, f"triggered_sms_{b.id}", b.phone, "sms", b.id)
-        logger.info("Sent trigger notifications to %d beneficiaries", len(beneficiaries))
+    logger.info("Sent trigger notifications to %d beneficiaries", len(beneficiaries))
 
 
-def check_heartbeat(db: Session) -> str | None:
-    """Evaluate heartbeat and transition vault status.
+def check_heartbeat(db: Session) -> list[str]:
+    """Evaluate heartbeat for all vaults and transition vault status.
 
     Returns:
-        None            — no action needed
-        'grace_started' — interval expired, grace period began
-        'grace_notify'  — in grace period, sent notifications
-        'triggered'     — grace period expired, vault triggered
+        List of actions taken across all vaults.
     """
-    cfg = db.query(HeartbeatConfig).first()
-    if not cfg or not cfg.last_check_in:
-        return None  # heartbeat not configured or never checked in
+    vaults = _get_vaults(db)
+    actions = []
+    
+    for vault in vaults:
+        cfg = vault.heartbeat_config
+        if not cfg or not cfg.last_check_in:
+            continue  # heartbeat not configured or never checked in for this vault
 
-    vault = _get_vault(db)
-    vs = _get_vault_status(db)
-    now = datetime.now(UTC)
+        vs = _get_vault_status(db, vault.id)
+        now = datetime.now(UTC)
 
-    # Already triggered — nothing to do
-    if vs.state == "triggered":
-        return None
+        # Already triggered — nothing to do
+        if vs.state == "triggered":
+            continue
 
-    deadline = _utc(cfg.last_check_in) + timedelta(days=cfg.interval_days)
+        deadline = _utc(cfg.last_check_in) + timedelta(days=cfg.interval_days)
 
-    # Active → Grace
-    if vs.state == "active" and now > deadline:
-        vs.state = "grace"
-        vs.grace_started_at = now
-        vs.updated_at = now
-        db.commit()
-        _send_grace_notifications(db, vault.id, cfg, vs)
-        return "grace_started"
-
-    # Grace — send escalating notifications
-    if vs.state == "grace" and vs.grace_started_at:
-        grace_end = _utc(vs.grace_started_at) + timedelta(days=cfg.grace_days)
-
-        if now > grace_end:
-            # Grace → Triggered
-            vs.state = "triggered"
-            vs.triggered_at = now
+        # Active → Grace
+        if vs.state == "active" and now > deadline:
+            vs.state = "grace"
+            vs.grace_started_at = now
+            vs.version = (vs.version or 1) + 1
             vs.updated_at = now
             db.commit()
-            _send_trigger_notifications(db, vault.id)
-            # Auto-approve access requests
-            import asyncio
-            asyncio.get_event_loop().create_task(_auto_approve_access_requests(db, vault.id))
-            return "triggered"
-        else:
-            # Still in grace — check for notification milestones
             _send_grace_notifications(db, vault.id, cfg, vs)
-            return "grace_notify"
+            actions.append(f"vault_{vault.id}_grace_started")
+            continue
 
-    return None
+        # Grace — send escalating notifications
+        if vs.state == "grace" and vs.grace_started_at:
+            grace_end = _utc(vs.grace_started_at) + timedelta(days=cfg.grace_days)
+
+            if now > grace_end:
+                # Grace → Triggered
+                vs.state = "triggered"
+                vs.triggered_at = now
+                vs.trigger_reason = "inactivity"
+                vs.version = (vs.version or 1) + 1
+                vs.updated_at = now
+                db.commit()
+                _send_trigger_notifications(db, vault.id)
+                # Auto-approve access requests (sync, in-process)
+                _auto_approve_access_requests_sync(db, vault.id)
+                actions.append(f"vault_{vault.id}_triggered")
+            else:
+                # Still in grace — check for notification milestones
+                _send_grace_notifications(db, vault.id, cfg, vs)
+                actions.append(f"vault_{vault.id}_grace_notify")
+
+    return actions

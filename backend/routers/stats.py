@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from models import Beneficiary, HeartbeatConfig, VaultMessage, VaultStatus
+from models import Beneficiary, HeartbeatConfig, User, Vault, VaultMessage, VaultStatus
 from deps import get_db, require_owner
 
 router = APIRouter(
@@ -22,12 +22,22 @@ class StatsOut(BaseModel):
 
 
 @router.get("", response_model=StatsOut)
-def get_stats(db: Session = Depends(get_db)):
-    msg_count = db.query(VaultMessage).count()
-    ben_count = db.query(Beneficiary).count()
+def get_stats(current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+    vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
+    if not vault:
+        return StatsOut(
+            message_count=0,
+            beneficiary_count=0,
+            last_check_in=None,
+            heartbeat_interval=None,
+            heartbeat_grace=None,
+            vault_status="active",
+        )
+    msg_count = db.query(VaultMessage).filter(VaultMessage.vault_id == vault.id).count()
+    ben_count = db.query(Beneficiary).filter(Beneficiary.vault_id == vault.id).count()
 
-    hb = db.query(HeartbeatConfig).first()
-    vs = db.query(VaultStatus).first()
+    hb = db.query(HeartbeatConfig).filter(HeartbeatConfig.vault_id == vault.id).first()
+    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
 
     return StatsOut(
         message_count=msg_count,

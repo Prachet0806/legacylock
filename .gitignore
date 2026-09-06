@@ -45,7 +45,7 @@ htmlcov/
 #######################################
 # Alembic
 #######################################
-alembic/versions/
+# alembic/versions/  # migrations are committed
 
 #######################################
 # SQLite / Database
@@ -72,3 +72,15 @@ alembic/versions/
 # Build artifacts
 #######################################
 build/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+playwright-report/
+test-results/
+coverage.xml
+.coverage*
+*.egg-info/
+pip-wheel-metadata/

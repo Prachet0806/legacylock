@@ -1,19 +1,25 @@
 import os
-import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-sys.path.append(os.getcwd())
+# Ensure backend/ is on sys.path regardless of CWD
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+import sys as _sys
+
+if str(BACKEND_DIR) not in _sys.path:
+    _sys.path.insert(0, str(BACKEND_DIR))
 
 from config import get_settings
 from db import Base
 import models  # noqa: F401 - import models to register them with Base.metadata
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# DATABASE_URL env wins over alembic.ini (never commit creds)
+config.set_main_option("sqlalchemy.url", os.environ.get("DATABASE_URL") or get_settings().database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

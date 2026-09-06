@@ -7,10 +7,11 @@ import os
 
 # Must be set before any application imports
 os.environ["ENVIRONMENT"] = "test"
-os.environ["SESSION_SECRET"] = "test-secret-key-for-testing-only-32b"
+os.environ["SESSION_SECRET"] = "test-secret-key-for-testing-only-32b-0123456789"
 os.environ["DATABASE_URL"] = "postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_test"
 os.environ["ALLOWED_ORIGINS"] = "http://localhost:3000"
 os.environ["HEARTBEAT_CHECK_INTERVAL"] = "999999"
+os.environ["HEARTBEAT_ENABLED"] = "false"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -54,39 +55,23 @@ def client():
 
 @pytest.fixture
 def auth(client):
-    """Login and return auth headers for test user."""
-    # Create test user directly in DB
-    from deps import get_db
-    import jwt
-    from datetime import UTC, datetime, timedelta
-    
-    db = next(get_db())
+    """Create isolated user+vault and return owner auth headers (explicit role)."""
+    db = _TestSession()
     try:
-        # Check if test user already exists
-        user = db.query(User).filter(User.email == "test@example.com").first()
-        if not user:
-            user = User(email="test@example.com", password_hash=hash_password("TestPass123!"))
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-        
-        # Check if vault exists for user
-        vault = db.query(Vault).filter(Vault.user_id == user.id).first()
-        if not vault:
-            vault = Vault(user_id=user.id, name="Primary Vault")
-            db.add(vault)
-            db.commit()
-            db.refresh(vault)
-        
-        # Use HS256 with a test secret for testing (instead of RS256 which needs RSA keys)
-        payload = {
-            "sub": str(user.id),
-            "vault_id": vault.id,
-            "type": "access",
-            "iat": int(datetime.now(UTC).timestamp()),
-            "exp": int((datetime.now(UTC) + timedelta(minutes=15)).timestamp()),
-        }
-        access_token = jwt.encode(payload, "test-secret-key", algorithm="HS256")
+        import uuid
+
+        email = f"test-{uuid.uuid4().hex[:8]}@example.com"
+        user = User(email=email, password_hash=hash_password("TestPass123!Long"))
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        vault = Vault(user_id=user.id, name="Primary Vault")
+        db.add(vault)
+        db.commit()
+        db.refresh(vault)
+
+        access_token = create_access_token(user.id, vault.id, role="owner")
         return {"Authorization": f"Bearer {access_token}"}
     finally:
         db.close()
@@ -94,20 +79,13 @@ def auth(client):
 
 @pytest.fixture(autouse=True)
 def clean_db():
-    """Clean all tables except user and vault before and after each test."""
-    # Tables to preserve (created once per session by auth fixture)
-    preserve_tables = {"user", "vault"}
-    
-    # Clean before test
+    """Clean all tables before and after each test (full isolation)."""
     with _test_engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
-            if table.name not in preserve_tables:
-                conn.execute(table.delete())
-    
+            conn.execute(table.delete())
+
     yield
-    
-    # Clean after test
+
     with _test_engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
-            if table.name not in preserve_tables:
-                conn.execute(table.delete())
+            conn.execute(table.delete())

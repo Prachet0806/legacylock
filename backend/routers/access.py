@@ -13,8 +13,7 @@ from sqlalchemy.orm import Session
 from models import AccessRequest, Beneficiary, User, Vault, VaultStatus
 from deps import get_db, get_current_beneficiary, require_beneficiary, require_owner
 from services.auth import create_access_token
-from services.notifications import send_email
-from services.shamir import split_secret, reconstruct_secret
+from config import get_settings
 
 # Public router — no auth required (for invitation acceptance)
 public_router = APIRouter(
@@ -34,11 +33,65 @@ router = APIRouter(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_vault(db: Session) -> Vault:
-    """Get the vault (assuming single vault per owner)."""
-    vault = db.query(Vault).first()
-    if not vault:
-        raise HTTPException(status_code=404, detail="Vault not found")
+def _get_vault(db: Session, current_user: User | Beneficiary | None = None) -> Vault:
+    """Get vault scoped to user/beneficiary. Fail closed (no cross-tenant fallback)."""
+    vault_id = None
+    if current_user is not None:
+        vault_id = getattr(current_user, "vault_id", None)
+        if vault_id is None and isinstance(current_user, User):
+            vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
+            if vault:
+                return vault
+            raise HTTPException(status_code=404, detail="Vault not found")
+        if vault_id is not None:
+            vault = db.query(Vault).filter(Vault.id == vault_id).first()
+            if vault:
+                return vault
+            raise HTTPException(status_code=404, detail="Vault not found")
+    raise HTTPException(status_code=404, detail="Vault not found")
+
+
+def _queue_email(to: str, subject: str, body: str) -> None:
+    """Best-effort in-process email dispatch (no fire-and-forget crash)."""
+    try:
+        import asyncio
+
+        from services.notifications import send_email
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None:
+            loop.create_task(send_email(to, subject, body))
+        else:
+            # No running loop (tests/CLI): run inline, swallow errors
+            try:
+                asyncio.run(send_email(to, subject, body))
+            except RuntimeError:
+                pass
+    except Exception:
+        pass
+
+
+def _require_share_access(current_beneficiary: Beneficiary, db: Session) -> Vault:
+    """Gate share retrieval: require approval or triggered vault."""
+    vault = _get_vault(db, current_beneficiary)
+    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
+    state = vs.state if vs else "active"
+    if state == "triggered":
+        return vault
+    req = (
+        db.query(AccessRequest)
+        .filter(
+            AccessRequest.beneficiary_id == current_beneficiary.id,
+            AccessRequest.vault_id == vault.id,
+            AccessRequest.status == "approved",
+        )
+        .first()
+    )
+    if req is None:
+        raise HTTPException(status_code=403, detail="Access not approved")
     return vault
 
 
@@ -93,19 +146,34 @@ class AccessStatusOut(BaseModel):
     vault_status: str
     vault_name: str
     share_index: int | None
-    share_total: int
-    share_threshold: int
-    has_share: bool
+    has_encrypted_share: bool
 
 
-class ShareSubmit(BaseModel):
-    """Beneficiary submits their Shamir share."""
-    share_b64: str = Field(..., min_length=1)
+class PublicKeySubmit(BaseModel):
+    """Beneficiary submits their public key for share encryption."""
+    public_key_b64: str = Field(..., min_length=1, description="Base64-encoded public key")
 
 
-class ShareSubmitOut(BaseModel):
+class PublicKeySubmitOut(BaseModel):
     message: str
-    key_b64: str | None = None
+
+
+class EncryptedShareStore(BaseModel):
+    """Owner stores an encrypted share for a beneficiary."""
+    beneficiary_id: int
+    encrypted_share_b64: str = Field(..., min_length=1, description="Base64-encrypted share")
+    share_index: int = Field(..., ge=1, le=255)
+
+
+class EncryptedShareStoreOut(BaseModel):
+    message: str
+
+
+class EncryptedShareRetrieveOut(BaseModel):
+    """Beneficiary retrieves their encrypted share."""
+    beneficiary_id: int
+    encrypted_share_b64: str | None
+    share_index: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -113,38 +181,60 @@ class ShareSubmitOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 @public_router.post("/invite/{invitation_hash}/accept", response_model=InvitationAcceptOut)
-def accept_invitation(invitation_hash: str, db: Session = Depends(get_db)):
-    """Beneficiary accepts invitation via email link."""
+def accept_invitation(invitation_hash: str, response: Response, db: Session = Depends(get_db)):
+    """Beneficiary accepts invitation via email link (one-time, rotates hash)."""
     beneficiary = db.query(Beneficiary).filter(
         Beneficiary.invitation_hash == invitation_hash
     ).first()
-    
+
     if not beneficiary:
+        # Generic to avoid enumeration oracle
         raise HTTPException(status_code=404, detail="Invalid or expired invitation")
-    
+
     if beneficiary.invitation_status == "accepted":
         raise HTTPException(status_code=409, detail="Invitation already accepted")
-    
+
     if beneficiary.invitation_status == "expired":
         raise HTTPException(status_code=410, detail="Invitation has expired")
-    
+
     # Check if invitation is older than 7 days
     if beneficiary.invitation_sent_at:
         expiry = beneficiary.invitation_sent_at + timedelta(days=7)
-        if datetime.now(UTC) > expiry:
+        now = datetime.now(UTC)
+        sent = beneficiary.invitation_sent_at
+        if sent.tzinfo is None:
+            sent = sent.replace(tzinfo=UTC)
+            expiry = sent + timedelta(days=7)
+        if now > expiry:
             beneficiary.invitation_status = "expired"
             db.commit()
             raise HTTPException(status_code=410, detail="Invitation has expired")
-    
-    # Mark invitation as accepted
+
+    # Mark invitation as accepted and rotate hash so link cannot be replayed
     beneficiary.invitation_status = "accepted"
     beneficiary.invitation_accepted_at = datetime.now(UTC)
+    beneficiary.invitation_hash = secrets.token_urlsafe(32)
     db.commit()
-    
-    # Create access token for beneficiary
-    vault = _get_vault(db)
-    access_token = create_access_token(beneficiary.id, vault.id)
-    
+
+    # Create beneficiary-scoped access token (explicit role)
+    vault = _get_vault(db, beneficiary)
+    access_token = create_access_token(beneficiary.id, vault.id, role="beneficiary")
+
+    # Also set beneficiary HttpOnly cookie for browser flows
+    try:
+        secure = get_settings().environment == "production"
+    except Exception:
+        secure = False
+    response.set_cookie(
+        key="legacylock_beneficiary_session",
+        value=access_token,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=15 * 60,
+        path="/",
+    )
+
     return InvitationAcceptOut(
         message="Invitation accepted. You can now access the vault.",
         beneficiary_id=beneficiary.id,
@@ -154,27 +244,31 @@ def accept_invitation(invitation_hash: str, db: Session = Depends(get_db)):
 
 @public_router.get("/invite/{invitation_hash}/status")
 def check_invitation_status(invitation_hash: str, db: Session = Depends(get_db)):
-    """Check invitation status without accepting."""
+    """Check invitation status without accepting (minimal disclosure)."""
     beneficiary = db.query(Beneficiary).filter(
         Beneficiary.invitation_hash == invitation_hash
     ).first()
-    
+
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Invalid invitation")
-    
+
     # Check expiry
     if beneficiary.invitation_sent_at:
-        expiry = beneficiary.invitation_sent_at + timedelta(days=7)
+        sent = beneficiary.invitation_sent_at
+        if sent.tzinfo is None:
+            from datetime import timezone
+
+            sent = sent.replace(tzinfo=timezone.utc)
+        expiry = sent + timedelta(days=7)
         is_expired = datetime.now(UTC) > expiry
     else:
         is_expired = False
-    
+
+    # Minimal: do not leak email unless link is valid; still avoid name enumeration
+    # by requiring full hash (256-bit) — return only status flags.
     return {
-        "beneficiary_name": beneficiary.name,
-        "beneficiary_email": beneficiary.email,
         "invitation_status": beneficiary.invitation_status,
         "is_expired": is_expired,
-        "invitation_sent_at": beneficiary.invitation_sent_at.isoformat() if beneficiary.invitation_sent_at else None,
     }
 
 
@@ -199,7 +293,7 @@ def create_access_request(
         raise HTTPException(status_code=409, detail="You already have a pending access request")
     
     # Check vault status
-    vault = _get_vault(db)
+    vault = _get_vault(db, current_beneficiary)
     vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
     vault_status = vs.state if vs else "active"
     
@@ -220,15 +314,12 @@ def create_access_request(
     db.commit()
     db.refresh(request)
     
-    # If auto-approved due to trigger, notify beneficiary
+    # If auto-approved due to trigger, notify beneficiary (best-effort)
     if status_value == "approved":
-        import asyncio
-        asyncio.get_event_loop().create_task(
-            send_email(
-                current_beneficiary.email,
-                "LegacyLock — Access Granted",
-                f"Your access request has been approved. You can now access the vault.",
-            )
+        _queue_email(
+            current_beneficiary.email,
+            "LegacyLock — Access Granted",
+            "Your access request has been approved. You can now access the vault.",
         )
     
     return AccessRequestOut(
@@ -269,80 +360,51 @@ def get_access_status(
     current_beneficiary: Beneficiary = Depends(require_beneficiary),
     db: Session = Depends(get_db),
 ):
-    """Get vault status and beneficiary's share info."""
-    vault = _get_vault(db)
+    """Get vault status and beneficiary's encrypted share info (gated)."""
+    vault = _require_share_access(current_beneficiary, db)
     vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
-    
-    has_share = current_beneficiary.share_data is not None
-    
+
+    has_encrypted_share = current_beneficiary.encrypted_share_data is not None
+
     return AccessStatusOut(
         vault_status=vs.state if vs else "active",
         vault_name=vault.name,
         share_index=current_beneficiary.share_index,
-        share_total=vs.share_total if vs else 0,
-        share_threshold=vs.share_threshold if vs else 0,
-        has_share=has_share,
+        has_encrypted_share=has_encrypted_share,
     )
 
 
-@router.post("/share", response_model=ShareSubmitOut)
-def submit_share(
-    data: ShareSubmit,
+@router.post("/public-key", response_model=PublicKeySubmitOut)
+def submit_public_key(
+    data: PublicKeySubmit,
     current_beneficiary: Beneficiary = Depends(require_beneficiary),
     db: Session = Depends(get_db),
 ):
-    """Beneficiary submits their Shamir share for recovery."""
-    vault = _get_vault(db)
-    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
-    
-    if not vs or vs.state != "triggered":
-        raise HTTPException(status_code=403, detail="Vault is not triggered. Shares can only be submitted after vault release.")
-    
-    if not current_beneficiary.share_data:
-        raise HTTPException(status_code=403, detail="You have not been assigned a share")
-    
-    # Verify the submitted share matches the beneficiary's assigned share
-    if data.share_b64 != current_beneficiary.share_data:
-        raise HTTPException(status_code=400, detail="Invalid share. Does not match your assigned share.")
-    
-    # If we have enough shares, reconstruct the key
-    # For now, just return the key - in production, this would trigger reconstruction
-    # when enough shares are submitted
-    
-    # Get all approved access requests with shares
-    approved_requests = db.query(AccessRequest).filter(
-        AccessRequest.vault_id == vault.id,
-        AccessRequest.status == "approved"
-    ).all()
-    
-    # Collect shares from approved beneficiaries
-    shares = []
-    for req in approved_requests:
-        ben = req.beneficiary
-        if ben.share_data:
-            shares.append(ben.share_data)
-    
-    if len(shares) >= (vs.share_threshold if vs else 2):
-        # Reconstruct key
-        import base64
-        from services.shamir import reconstruct_secret
-        
-        try:
-            decoded_shares = [base64.b64decode(s) for s in shares]
-            secret = reconstruct_secret(decoded_shares)
-            key_b64 = base64.b64encode(secret).decode()
-            
-            return ShareSubmitOut(
-                message=f"Share submitted. Key reconstructed from {len(shares)} shares.",
-                key_b64=key_b64,
-            )
-        except Exception as e:
-            return ShareSubmitOut(
-                message=f"Share submitted, but reconstruction failed: {str(e)}",
-            )
-    
-    return ShareSubmitOut(
-        message=f"Share submitted. Waiting for {vs.share_threshold - len(shares)} more shares to reconstruct key.",
+    """Beneficiary submits their public key for share encryption."""
+    import base64 as _b64
+
+    try:
+        raw = _b64.b64decode(data.public_key_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="public_key_b64 must be valid base64") from exc
+    if len(raw) == 0 or len(raw) > 10_000:
+        raise HTTPException(status_code=422, detail="public_key_b64 size invalid")
+    current_beneficiary.public_key = data.public_key_b64
+    db.commit()
+    return PublicKeySubmitOut(message="Public key stored successfully")
+
+
+@router.get("/my-share", response_model=EncryptedShareRetrieveOut)
+def get_my_encrypted_share(
+    current_beneficiary: Beneficiary = Depends(require_beneficiary),
+    db: Session = Depends(get_db),
+):
+    """Beneficiary retrieves their encrypted share (requires approval/trigger)."""
+    _require_share_access(current_beneficiary, db)
+    return EncryptedShareRetrieveOut(
+        beneficiary_id=current_beneficiary.id,
+        encrypted_share_b64=current_beneficiary.encrypted_share_data,
+        share_index=current_beneficiary.share_index,
     )
 
 
@@ -360,10 +422,11 @@ owner_router = APIRouter(
 @owner_router.get("/requests", response_model=list[AccessRequestListOut])
 def list_access_requests(
     status_filter: Optional[str] = None,
+    current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
     """List all access requests for the vault (owner view)."""
-    vault = _get_vault(db)
+    vault = _get_vault(db, current_user)
     
     query = db.query(AccessRequest).filter(AccessRequest.vault_id == vault.id)
     
@@ -394,7 +457,7 @@ def approve_access_request(
     db: Session = Depends(get_db),
 ):
     """Approve or deny an access request."""
-    vault = _get_vault(db)
+    vault = _get_vault(db, current_user)
     
     request = db.query(AccessRequest).filter(
         AccessRequest.id == request_id,
@@ -420,76 +483,60 @@ def approve_access_request(
         message = "Access request denied"
     
     db.commit()
-    
-    # Notify beneficiary
-    import asyncio
-    asyncio.get_event_loop().create_task(
-        send_email(
-            request.beneficiary.email,
-            f"LegacyLock — Access Request {request.status.capitalize()}",
-            f"Your access request has been {request.status}.",
-        )
+
+    # Notify beneficiary (best-effort, in-process)
+    _queue_email(
+        request.beneficiary.email,
+        f"LegacyLock — Access Request {request.status.capitalize()}",
+        f"Your access request has been {request.status}.",
     )
-    
+
     return {"message": message, "status": request.status}
 
 
-@owner_router.post("/generate-shares")
-def generate_shares_for_all(
-    threshold: int = 2,
+@owner_router.post("/encrypted-shares", response_model=EncryptedShareStoreOut)
+def store_encrypted_share(
+    data: EncryptedShareStore,
+    current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """Generate Shamir shares for all beneficiaries who accepted invitations."""
-    vault = _get_vault(db)
+    """Owner stores an encrypted share for a beneficiary (client-generated)."""
+    import base64 as _b64
+
+    vault = _get_vault(db, current_user)
+
+    try:
+        raw = _b64.b64decode(data.encrypted_share_b64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="encrypted_share_b64 must be valid base64") from exc
+    if len(raw) == 0 or len(raw) > 100_000:
+        raise HTTPException(status_code=422, detail="encrypted_share_b64 size invalid")
+
+    beneficiary = db.query(Beneficiary).filter(
+        Beneficiary.id == data.beneficiary_id,
+        Beneficiary.vault_id == vault.id
+    ).first()
     
-    # Get beneficiaries who accepted invitations
-    beneficiaries = db.query(Beneficiary).filter(
-        Beneficiary.vault_id == vault.id,
-        Beneficiary.invitation_status == "accepted"
-    ).all()
+    if not beneficiary:
+        raise HTTPException(status_code=404, detail="Beneficiary not found")
     
-    if len(beneficiaries) < threshold:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Need at least {threshold} beneficiaries with accepted invitations, but only {len(beneficiaries)} found."
-        )
+    if beneficiary.invitation_status != "accepted":
+        raise HTTPException(status_code=400, detail="Beneficiary has not accepted invitation")
     
-    # Generate a master key to split
-    import base64
-    import os
-    master_key = os.urandom(32)  # 256-bit key
-    shares = split_secret(master_key, len(beneficiaries), threshold)
-    
-    # Assign shares to beneficiaries
-    for i, ben in enumerate(beneficiaries):
-        ben.share_data = base64.b64encode(shares[i]).decode()
-        ben.share_index = i + 1
-    
-    # Update vault status
-    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
-    if not vs:
-        vs = VaultStatus(vault_id=vault.id)
-        db.add(vs)
-    vs.share_threshold = threshold
-    vs.share_total = len(beneficiaries)
-    vs.updated_at = datetime.now(UTC)
-    
+    beneficiary.encrypted_share_data = data.encrypted_share_b64
+    beneficiary.share_index = data.share_index
     db.commit()
     
-    return {
-        "message": f"Generated {len(beneficiaries)} shares with threshold {threshold}.",
-        "shares_assigned": len(beneficiaries),
-        "threshold": threshold,
-        "key_b64": base64.b64encode(master_key).decode(),  # Only returned once!
-    }
+    return EncryptedShareStoreOut(message="Encrypted share stored successfully")
 
 
-@owner_router.get("/shares")
-def list_shares(
+@owner_router.get("/encrypted-shares")
+def list_encrypted_shares(
+    current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """List which beneficiaries have shares (owner view)."""
-    vault = _get_vault(db)
+    """List which beneficiaries have encrypted shares (owner view)."""
+    vault = _get_vault(db, current_user)
     
     beneficiaries = db.query(Beneficiary).filter(Beneficiary.vault_id == vault.id).all()
     
@@ -499,7 +546,8 @@ def list_shares(
             "beneficiary_name": b.name,
             "beneficiary_email": b.email,
             "share_index": b.share_index,
-            "has_share": b.share_data is not None,
+            "has_encrypted_share": b.encrypted_share_data is not None,
+            "has_public_key": b.public_key is not None,
             "invitation_status": b.invitation_status,
         }
         for b in beneficiaries

@@ -2,12 +2,14 @@ from datetime import UTC, datetime
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
-from models import Beneficiary, Vault
+from models import Beneficiary, User, Vault
 from deps import get_db, require_owner
-from services.notifications import send_email
+from config import get_settings
+from logging_config import log_audit
 
 router = APIRouter(
     prefix="/beneficiaries",
@@ -22,13 +24,13 @@ router = APIRouter(
 
 class BeneficiaryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    email: str = Field(..., min_length=3, max_length=320)
+    email: EmailStr = Field(..., max_length=320)
     phone: str | None = Field(None, max_length=30)
 
 
 class BeneficiaryUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
-    email: str | None = Field(None, min_length=3, max_length=320)
+    email: EmailStr | None = Field(None, max_length=320)
     phone: str | None = Field(None, max_length=30)
 
 
@@ -55,9 +57,9 @@ class InviteOut(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _get_vault(db: Session) -> Vault:
-    """Get the vault for the current owner (assuming single vault per owner)."""
-    vault = db.query(Vault).first()
+def _get_vault(db: Session, current_user: User) -> Vault:
+    """Get the vault for the current owner."""
+    vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")
     return vault
@@ -70,6 +72,8 @@ def _generate_invitation_hash() -> str:
 
 async def _send_invitation_email(beneficiary: Beneficiary, invitation_link: str) -> None:
     """Send invitation email to beneficiary."""
+    from services.notifications import send_email
+
     await send_email(
         beneficiary.email,
         "LegacyLock — You've Been Invited as a Beneficiary",
@@ -93,8 +97,8 @@ Secure Digital Legacy""",
 # ---------------------------------------------------------------------------
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def add_beneficiary(data: BeneficiaryCreate, db: Session = Depends(get_db)):
-    vault = _get_vault(db)
+def add_beneficiary(data: BeneficiaryCreate, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+    vault = _get_vault(db, current_user)
     
     # Check if beneficiary already exists for this vault
     existing = db.query(Beneficiary).filter(
@@ -107,18 +111,26 @@ def add_beneficiary(data: BeneficiaryCreate, db: Session = Depends(get_db)):
     entry = Beneficiary(
         vault_id=vault.id,
         name=data.name,
-        email=data.email,
+        email=str(data.email),
         phone=data.phone,
     )
     db.add(entry)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Beneficiary with this email already exists") from exc
     db.refresh(entry)
+    try:
+        log_audit("beneficiary.add", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
     return {"id": entry.id, "message": "Beneficiary added"}
 
 
 @router.get("", response_model=list[BeneficiaryOut])
-def list_beneficiaries(db: Session = Depends(get_db)):
-    vault = _get_vault(db)
+def list_beneficiaries(current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+    vault = _get_vault(db, current_user)
     rows = db.query(Beneficiary).filter(Beneficiary.vault_id == vault.id).order_by(Beneficiary.created_at.desc()).all()
     return [
         BeneficiaryOut(
@@ -137,9 +149,9 @@ def list_beneficiaries(db: Session = Depends(get_db)):
 
 
 @router.post("/{beneficiary_id}/invite")
-async def invite_beneficiary(beneficiary_id: int, db: Session = Depends(get_db)):
+async def invite_beneficiary(beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     """Send invitation email to beneficiary."""
-    vault = _get_vault(db)
+    vault = _get_vault(db, current_user)
     
     beneficiary = db.query(Beneficiary).filter(
         Beneficiary.id == beneficiary_id,
@@ -149,21 +161,33 @@ async def invite_beneficiary(beneficiary_id: int, db: Session = Depends(get_db))
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
     
-    # Generate invitation hash if not exists
-    if not beneficiary.invitation_hash:
+    # Generate invitation hash if not exists (rotate if expired)
+    if not beneficiary.invitation_hash or beneficiary.invitation_status == "expired":
         beneficiary.invitation_hash = _generate_invitation_hash()
-    
+
     beneficiary.invitation_status = "sent"
     beneficiary.invitation_sent_at = datetime.now(UTC)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        beneficiary.invitation_hash = _generate_invitation_hash()
+        db.commit()
     db.refresh(beneficiary)
-    
-    # Build invitation link (frontend URL - in production this would be configurable)
-    frontend_url = "http://localhost:3000"  # TODO: Make configurable
+
+    # Build invitation link (configurable frontend URL)
+    try:
+        frontend_url = get_settings().frontend_origin()
+    except Exception:
+        frontend_url = "http://localhost:3000"
     invitation_link = f"{frontend_url}/access/invite/{beneficiary.invitation_hash}"
-    
+
     # Send email
     await _send_invitation_email(beneficiary, invitation_link)
+    try:
+        log_audit("beneficiary.invite", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
     
     return {
         "message": "Invitation sent",
@@ -173,8 +197,8 @@ async def invite_beneficiary(beneficiary_id: int, db: Session = Depends(get_db))
 
 
 @router.put("/{beneficiary_id}")
-def update_beneficiary(beneficiary_id: int, data: BeneficiaryUpdate, db: Session = Depends(get_db)):
-    vault = _get_vault(db)
+def update_beneficiary(beneficiary_id: int, data: BeneficiaryUpdate, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+    vault = _get_vault(db, current_user)
     
     beneficiary = db.query(Beneficiary).filter(
         Beneficiary.id == beneficiary_id,
@@ -187,28 +211,36 @@ def update_beneficiary(beneficiary_id: int, data: BeneficiaryUpdate, db: Session
     if data.name is not None:
         beneficiary.name = data.name
     if data.email is not None:
-        beneficiary.email = data.email
+        beneficiary.email = str(data.email)
     if data.phone is not None:
         beneficiary.phone = data.phone
-    
+
     beneficiary.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(beneficiary)
-    
+    try:
+        log_audit("beneficiary.update", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
+
     return {"message": "Beneficiary updated"}
 
 
 @router.delete("/{beneficiary_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_beneficiary(beneficiary_id: int, db: Session = Depends(get_db)):
-    vault = _get_vault(db)
-    
+def delete_beneficiary(beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+    vault = _get_vault(db, current_user)
+
     entry = db.query(Beneficiary).filter(
         Beneficiary.id == beneficiary_id,
         Beneficiary.vault_id == vault.id
     ).first()
-    
+
     if not entry:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
-    
+
     db.delete(entry)
     db.commit()
+    try:
+        log_audit("beneficiary.delete", "owner", current_user.id, vault.id)
+    except Exception:
+        pass

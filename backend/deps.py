@@ -23,9 +23,11 @@ def _get_token_from_request(request: Request) -> str | None:
     # Try Authorization header first
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        return auth_header.split(" ")[1]
-    
-    # Try cookie
+        parts = auth_header.split(" ", 1)
+        if len(parts) == 2 and parts[1].strip():
+            return parts[1].strip()
+
+    # Try cookie (owner session)
     return request.cookies.get("legacylock_owner_session")
 
 
@@ -34,8 +36,10 @@ def _get_beneficiary_token_from_request(request: Request) -> str | None:
     # Try Authorization header first
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
-        return auth_header.split(" ")[1]
-    
+        parts = auth_header.split(" ", 1)
+        if len(parts) == 2 and parts[1].strip():
+            return parts[1].strip()
+
     # Try cookie
     return request.cookies.get("legacylock_beneficiary_session")
 
@@ -46,15 +50,23 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User | 
     if not token:
         return None
 
-    payload = decode_access_token(token)
+    try:
+        payload = decode_access_token(token)
+    except RuntimeError:
+        return None
     if not payload:
         return None
 
-    role = payload.get("role", "owner")
-    if role != "owner":
+    # No default: role must be explicitly owner (fail closed)
+    if payload.get("role") != "owner":
         return None
 
-    user_id = int(payload.get("sub", 0))
+    try:
+        user_id = int(payload.get("sub", 0))
+    except (TypeError, ValueError):
+        return None
+    if user_id <= 0:
+        return None
     user = db.query(User).filter(User.id == user_id).first()
     return user
 
@@ -65,16 +77,23 @@ def get_current_beneficiary(request: Request, db: Session = Depends(get_db)) -> 
     if not token:
         return None
 
-    payload = decode_access_token(token)
+    try:
+        payload = decode_access_token(token)
+    except RuntimeError:
+        return None
     if not payload:
         return None
 
-    role = payload.get("role")
-    if role != "beneficiary":
+    if payload.get("role") != "beneficiary":
         return None
 
-    # Beneficiary tokens have beneficiary_id in sub
-    beneficiary_id = int(payload.get("sub", 0))
+    try:
+        # Beneficiary tokens have beneficiary_id in sub
+        beneficiary_id = int(payload.get("sub", 0))
+    except (TypeError, ValueError):
+        return None
+    if beneficiary_id <= 0:
+        return None
     beneficiary = db.query(Beneficiary).filter(Beneficiary.id == beneficiary_id).first()
     return beneficiary
 

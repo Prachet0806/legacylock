@@ -1,5 +1,7 @@
+import base64
 import json
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -7,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from deps import get_db, require_owner
 from models import User, Vault, VaultMessage
+from services.auth import verify_password
+from logging_config import log_audit
 
 router = APIRouter(
     prefix="/vault",
@@ -25,8 +29,17 @@ class MessageRequest(BaseModel):
     ciphertext: str | None = Field(None, max_length=2_000_000)
     wrapped_mek: str | None = Field(None, max_length=100_000)
     iv: str | None = Field(None, max_length=100)
-    crypto_version: int | None = 1
-    crypto_metadata: dict | str | None = None
+    crypto_version: Literal[1] = 1
+    crypto_metadata: dict | None = None
+
+
+def _require_b64(value: str, field: str, max_raw: int) -> None:
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"{field} must be valid base64") from exc
+    if len(raw) == 0 or len(raw) > max_raw:
+        raise HTTPException(status_code=422, detail=f"{field} size invalid")
 
 
 class MessageMeta(BaseModel):
@@ -66,10 +79,10 @@ class CryptoMaterialResponse(BaseModel):
 
 
 class CryptoMaterialRequest(BaseModel):
-    wrapped_vmk: str
-    vmk_crypto_version: int
-    vmk_kdf_algorithm: str
-    vmk_kdf_salt: str
+    wrapped_vmk: str = Field(..., min_length=1, max_length=100_000)
+    vmk_crypto_version: Literal[1] = 1
+    vmk_kdf_algorithm: Literal["PBKDF2-SHA256"] = "PBKDF2-SHA256"
+    vmk_kdf_salt: str = Field(..., min_length=1, max_length=10_000)
     vmk_kdf_parameters: dict
 
 
@@ -78,15 +91,12 @@ class CryptoMaterialRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _get_vault(db: Session, current_user: User | None = None) -> Vault:
-    """Get vault scoped to user, with single-tenant fallback for legacy/test rows."""
-    if current_user:
+    """Get vault scoped to user. Fail closed (no cross-tenant fallback)."""
+    if current_user is not None:
         vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
         if vault:
             return vault
-    vault = db.query(Vault).first()
-    if not vault:
-        raise HTTPException(status_code=404, detail="Vault not found")
-    return vault
+    raise HTTPException(status_code=404, detail="Vault not found")
 
 
 # ---------------------------------------------------------------------------
@@ -107,15 +117,18 @@ def save_message(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Either ciphertext or encrypted_content must be provided.",
         )
+    if not data.wrapped_mek:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="wrapped_mek is required.",
+        )
+    # Validate opaque blobs are base64 (fail fast, no silent corruption)
+    _require_b64(ciphertext, "ciphertext", 2_000_000)
+    _require_b64(data.wrapped_mek, "wrapped_mek", 100_000)
+    if data.iv:
+        _require_b64(data.iv, "iv", 64)
 
-    metadata_dict = {}
-    if isinstance(data.crypto_metadata, dict):
-        metadata_dict = data.crypto_metadata
-    elif isinstance(data.crypto_metadata, str):
-        try:
-            metadata_dict = json.loads(data.crypto_metadata)
-        except Exception:
-            metadata_dict = {}
+    metadata_dict = dict(data.crypto_metadata) if data.crypto_metadata else {}
 
     if data.iv and "iv" not in metadata_dict:
         metadata_dict["iv"] = data.iv
@@ -124,13 +137,17 @@ def save_message(
         vault_id=vault.id,
         label=data.label,
         ciphertext=ciphertext,
-        wrapped_mek=data.wrapped_mek or "",
-        crypto_version=data.crypto_version or 1,
+        wrapped_mek=data.wrapped_mek,
+        crypto_version=data.crypto_version,
         crypto_metadata=json.dumps(metadata_dict),
     )
     db.add(message)
     db.commit()
     db.refresh(message)
+    try:
+        log_audit("message.create", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
     return {"id": message.id, "message": "Message saved"}
 
 
@@ -171,12 +188,12 @@ def load_message(
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    metadata = {}
-    if message.crypto_metadata:
-        try:
-            metadata = json.loads(message.crypto_metadata)
-        except Exception:
-            metadata = {}
+    try:
+        metadata = json.loads(message.crypto_metadata) if message.crypto_metadata else {}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Stored crypto metadata is corrupt") from exc
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=500, detail="Stored crypto metadata is corrupt")
     iv_str = metadata.get("iv", "")
 
     return MessageDetail(
@@ -208,12 +225,25 @@ def delete_message(
         raise HTTPException(status_code=404, detail="Message not found")
     db.delete(message)
     db.commit()
+    try:
+        log_audit("message.delete", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
+
+
+class MessageUpdate(BaseModel):
+    label: str | None = Field(None, min_length=1, max_length=200)
+    encrypted_content: str | None = Field(None, max_length=2_000_000)
+    ciphertext: str | None = Field(None, max_length=2_000_000)
+    wrapped_mek: str | None = Field(None, max_length=100_000)
+    iv: str | None = Field(None, max_length=100)
+    crypto_metadata: dict | None = None
 
 
 @router.put("/messages/{message_id}")
 def update_message(
     message_id: int,
-    data: MessageRequest,
+    data: MessageUpdate,
     current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
@@ -228,36 +258,64 @@ def update_message(
 
     ciphertext = data.ciphertext or data.encrypted_content
     if ciphertext:
+        _require_b64(ciphertext, "ciphertext", 2_000_000)
         message.ciphertext = ciphertext
 
-    message.label = data.label
+    if data.label is not None:
+        message.label = data.label
 
     if data.wrapped_mek is not None:
+        _require_b64(data.wrapped_mek, "wrapped_mek", 100_000)
         message.wrapped_mek = data.wrapped_mek
 
-    if data.crypto_version is not None:
-        message.crypto_version = data.crypto_version
+    if data.iv is not None:
+        _require_b64(data.iv, "iv", 64)
 
     if data.crypto_metadata is not None:
-        if isinstance(data.crypto_metadata, dict):
-            message.crypto_metadata = json.dumps(data.crypto_metadata)
-        else:
-            message.crypto_metadata = str(data.crypto_metadata)
+        merged = dict(data.crypto_metadata)
+        if data.iv and "iv" not in merged:
+            merged["iv"] = data.iv
+        message.crypto_metadata = json.dumps(merged)
+    elif data.iv:
+        try:
+            existing = json.loads(message.crypto_metadata) if message.crypto_metadata else {}
+        except Exception:
+            existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        existing["iv"] = data.iv
+        message.crypto_metadata = json.dumps(existing)
 
     message.updated_at = datetime.now(UTC)
     db.commit()
+    try:
+        log_audit("message.update", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
     return {"id": message.id, "message": "Message updated"}
+
+
+class WipeRequest(BaseModel):
+    password: str = Field(..., min_length=12, max_length=256)
+    confirm: Literal[True]
 
 
 @router.delete("/messages", status_code=status.HTTP_204_NO_CONTENT)
 def wipe_vault(
+    data: WipeRequest,
     current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """Delete ALL messages for the user's vault."""
+    """Delete ALL messages for the user's vault (requires password + confirm)."""
+    if not verify_password(data.password, current_user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid password")
     vault = _get_vault(db, current_user)
     db.query(VaultMessage).filter(VaultMessage.vault_id == vault.id).delete()
     db.commit()
+    try:
+        log_audit("vault.wipe", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +355,11 @@ def save_crypto_material(
     """Save wrapped VMK and KDF metadata (initial setup or passphrase change)."""
     vault = _get_vault(db, current_user)
 
-    # Validate crypto version
-    if data.vmk_crypto_version != 1:
-        raise HTTPException(status_code=400, detail="Unsupported crypto version")
-
-    if data.vmk_kdf_algorithm != "PBKDF2-SHA256":
-        raise HTTPException(status_code=400, detail="Unsupported KDF algorithm")
+    _require_b64(data.wrapped_vmk, "wrapped_vmk", 100_000)
+    _require_b64(data.vmk_kdf_salt, "vmk_kdf_salt", 10_000)
+    iters = data.vmk_kdf_parameters.get("iterations")
+    if not isinstance(iters, int) or iters < 100_000 or iters > 10_000_000:
+        raise HTTPException(status_code=422, detail="iterations must be >= 100000")
 
     vault.wrapped_vmk = data.wrapped_vmk
     vault.vmk_crypto_version = data.vmk_crypto_version
@@ -313,5 +370,9 @@ def save_crypto_material(
 
     db.commit()
     db.refresh(vault)
+    try:
+        log_audit("vault.crypto_material_save", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
 
     return {"message": "Crypto material saved successfully"}

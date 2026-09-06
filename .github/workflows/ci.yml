@@ -63,7 +63,7 @@ jobs:
         working-directory: backend
 
       - name: mypy type check
-        run: mypy --exclude="db\.py|services|routers/(vault|trigger|stats|shares|heartbeat|beneficiaries)\.py" .
+        run: mypy .
         working-directory: backend
 
       - name: pytest
@@ -71,10 +71,11 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_test
-          SESSION_SECRET: test-secret-key-for-testing-only-32b
+          SESSION_SECRET: test-secret-key-for-testing-only-32b-0123456789
           ENVIRONMENT: test
           ALLOWED_ORIGINS: http://localhost:3000
           HEARTBEAT_CHECK_INTERVAL: "999999"
+          HEARTBEAT_ENABLED: "false"
 
   frontend:
     name: Frontend (ESLint, TypeScript, Build)

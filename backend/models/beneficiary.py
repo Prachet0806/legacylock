@@ -13,9 +13,10 @@ class Beneficiary(Base):
     name = Column(String(200), nullable=False)
     email = Column(String(320), nullable=False)
     phone = Column(String(30), nullable=True)
+    public_key = Column(Text, nullable=True)  # Beneficiary's public key for encrypting shares
     share_index = Column(Integer, nullable=True)
-    share_data = Column(Text, nullable=True)
-    invitation_hash = Column(Text, nullable=True)
+    encrypted_share_data = Column(Text, nullable=True)  # Encrypted share (encrypted with beneficiary's public key)
+    invitation_hash = Column(Text, nullable=True, unique=True, index=True)
     invitation_status = Column(String(20), nullable=False, default="pending")
     invitation_sent_at = Column(DateTime(timezone=True), nullable=True)
     invitation_accepted_at = Column(DateTime(timezone=True), nullable=True)

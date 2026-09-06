@@ -13,6 +13,19 @@ jobs:
   backend:
     name: Backend Tests (pytest)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: legacylock
+          POSTGRES_PASSWORD: legacylock
+          POSTGRES_DB: legacylock_dev
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U legacylock"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
@@ -21,19 +34,34 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: backend/requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest httpx
+        run: pip install -r requirements-dev.txt
         working-directory: backend
+
+      - name: Create test database
+        run: |
+          PGPASSWORD=legacylock psql -h localhost -U legacylock -d legacylock_dev -c "CREATE DATABASE legacylock_test;"
+        env:
+          PGPASSWORD: legacylock
+
+      - name: Run Alembic migrations
+        run: alembic upgrade head
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_dev
 
       - name: Run pytest
         run: pytest tests/ -v --tb=short
         working-directory: backend
         env:
-          LEGACYLOCK_API_KEY: ci-test-key
-          DATABASE_URL: sqlite:///:memory:
+          DATABASE_URL: postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_test
+          SESSION_SECRET: test-secret-key-for-testing-only-32b-0123456789
+          ENVIRONMENT: test
+          ALLOWED_ORIGINS: http://localhost:3000
           HEARTBEAT_CHECK_INTERVAL: "999999"
+          HEARTBEAT_ENABLED: "false"
 
   # ─────────────────────────────────────────
   # Frontend — TypeScript + Playwright
@@ -71,7 +99,10 @@ jobs:
           sleep 3   # give uvicorn time to start
         working-directory: backend
         env:
-          LEGACYLOCK_API_KEY: ci-test-key
+          DATABASE_URL: postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_dev
+          SESSION_SECRET: test-secret-key-for-testing-only-32b-0123456789
+          ENVIRONMENT: test
+          ALLOWED_ORIGINS: http://localhost:3000
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
@@ -82,7 +113,6 @@ jobs:
         working-directory: frontend
         env:
           NEXT_PUBLIC_API_URL: http://localhost:8000
-          NEXT_PUBLIC_API_KEY: ci-test-key
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4

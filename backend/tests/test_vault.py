@@ -1,16 +1,23 @@
 """Tests for /vault/messages routes."""
 
+import base64
+
 import pytest
 
-MESSAGE_A = {"label": "Bank Info", "encrypted_content": "ZW5jcnlwdGVkY29udGVudA=="}
-MESSAGE_B = {"label": "Seed Phrase", "encrypted_content": "c2VlZHBocmFzZWVuY3J5cHRlZA=="}
+_WMEK = base64.b64encode(b"0" * 32).decode()
+_IV = base64.b64encode(b"1" * 12).decode()
+
+MESSAGE_A = {"label": "Bank Info", "ciphertext": "ZW5jcnlwdGVkY29udGVudA==", "wrapped_mek": _WMEK, "iv": _IV}
+MESSAGE_B = {"label": "Seed Phrase", "ciphertext": "c2VlZHBocmFzZWVuY3J5cHRlZA==", "wrapped_mek": _WMEK, "iv": _IV}
+
+WIPE_BODY = {"password": "TestPass123!Long", "confirm": True}
 
 
 @pytest.fixture(autouse=True)
 def wipe_between_tests(client, auth):
     """Wipe vault before each test for a clean state."""
     yield
-    client.delete("/vault/messages", headers=auth)
+    client.request("DELETE", "/vault/messages", json=WIPE_BODY, headers=auth)
 
 
 class TestVaultAuth:
@@ -31,7 +38,7 @@ class TestVaultAuth:
         assert res.status_code == 401
 
     def test_wipe_requires_auth(self, client):
-        res = client.delete("/vault/messages")
+        res = client.request("DELETE", "/vault/messages", json=WIPE_BODY)
         assert res.status_code == 401
 
 
@@ -100,10 +107,19 @@ class TestVaultCRUD:
     def test_wipe_vault(self, client, auth):
         client.post("/vault/messages", json=MESSAGE_A, headers=auth)
         client.post("/vault/messages", json=MESSAGE_B, headers=auth)
-        res = client.delete("/vault/messages", headers=auth)
+        res = client.request("DELETE", "/vault/messages", json=WIPE_BODY, headers=auth)
         assert res.status_code == 204
         list_res = client.get("/vault/messages", headers=auth)
         assert list_res.json() == []
+
+    def test_wipe_requires_password(self, client, auth):
+        client.post("/vault/messages", json=MESSAGE_A, headers=auth)
+        res = client.request("DELETE", "/vault/messages", json={"password": "wrong-password-123", "confirm": True}, headers=auth)
+        assert res.status_code == 401
+
+    def test_wipe_requires_confirm(self, client, auth):
+        res = client.request("DELETE", "/vault/messages", json={"password": "TestPass123!Long"}, headers=auth)
+        assert res.status_code == 422
 
     def test_list_returns_meta_not_content(self, client, auth):
         """GET /vault/messages must NOT return encrypted_content in the list."""
@@ -126,18 +142,30 @@ class TestVaultCRUD:
 
 class TestVaultValidation:
     def test_label_required(self, client, auth):
-        res = client.post("/vault/messages", json={"encrypted_content": "abc"}, headers=auth)
+        res = client.post("/vault/messages", json={"ciphertext": "YWJj", "wrapped_mek": _WMEK}, headers=auth)
         assert res.status_code == 422
 
     def test_content_required(self, client, auth):
         res = client.post("/vault/messages", json={"label": "test"}, headers=auth)
         assert res.status_code == 422
 
+    def test_wrapped_mek_required(self, client, auth):
+        res = client.post("/vault/messages", json={"label": "t", "ciphertext": "YWJj"}, headers=auth)
+        assert res.status_code == 422
+
+    def test_bad_base64_rejected(self, client, auth):
+        res = client.post(
+            "/vault/messages",
+            json={"label": "t", "ciphertext": "!!!not-base64", "wrapped_mek": _WMEK},
+            headers=auth,
+        )
+        assert res.status_code == 422
+
     def test_label_too_long(self, client, auth):
-        payload = {"label": "x" * 201, "encrypted_content": "abc"}
+        payload = {"label": "x" * 201, "ciphertext": "YWJj", "wrapped_mek": _WMEK}
         res = client.post("/vault/messages", json=payload, headers=auth)
         assert res.status_code == 422
 
     def test_empty_label(self, client, auth):
-        res = client.post("/vault/messages", json={"label": "", "encrypted_content": "abc"}, headers=auth)
+        res = client.post("/vault/messages", json={"label": "", "ciphertext": "YWJj", "wrapped_mek": _WMEK}, headers=auth)
         assert res.status_code == 422

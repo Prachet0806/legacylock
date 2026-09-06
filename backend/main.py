@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
 from db import SessionLocal, init_db
 from logging_config import setup_logging
-from middleware.security import SecurityHeadersMiddleware
+from middleware import RequestIdMiddleware, SecurityHeadersMiddleware, RateLimiterMiddleware
 from routers import access, auth, beneficiaries, health, heartbeat, shares, stats, trigger, vault
 from services.heartbeat_checker import check_heartbeat
 
@@ -22,25 +22,48 @@ logger = logging.getLogger("legacylock")
 HEARTBEAT_CHECK_INTERVAL = int(os.environ.get("HEARTBEAT_CHECK_INTERVAL", "3600"))
 
 
+def _parse_origins(raw: str) -> list[str]:
+    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    # Never allow wildcard with credentials
+    origins = [o for o in origins if o != "*"]
+    if not origins:
+        return ["http://localhost:3000"]
+    return origins
+
+
 async def _heartbeat_loop() -> None:
-    """Background task that periodically checks heartbeat inactivity."""
+    """Background task that periodically checks heartbeat inactivity (in-process)."""
+    # Run blocking DB work in a thread so the event loop stays responsive
     while True:
         await asyncio.sleep(HEARTBEAT_CHECK_INTERVAL)
+        if not get_settings().heartbeat_enabled:
+            continue
         try:
-            db = SessionLocal()
-            try:
-                result = check_heartbeat(db)
-                if result:
-                    logger.warning("Heartbeat check result: %s", result)
-            finally:
-                db.close()
+            def _run() -> list[str]:
+                db = SessionLocal()
+                try:
+                    return check_heartbeat(db)
+                finally:
+                    db.close()
+
+            results = await asyncio.to_thread(_run)
+            for result in results:
+                logger.info("Heartbeat check result: %s", result)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("Heartbeat check failed")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    init_db()
+    # Fail closed on bad secrets before serving traffic (invalidates old tokens)
+    from services.auth import _get_jwt_secret
+
+    _get_jwt_secret()
+    # In test env init_db creates tables; in prod Alembic owns schema.
+    if settings.environment != "production":
+        init_db()
     task = asyncio.create_task(_heartbeat_loop())
     yield
     task.cancel()
@@ -48,16 +71,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="LegacyLock API", lifespan=lifespan)
 
-# Security headers FIRST (before CORS)
+# NOTE: Starlette executes middleware outermost-first in reverse-addition order
+# (last added = outermost). So add innermost first, CORS last.
+# Security headers (innermost)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# CORS
+# Request ID for correlation
+app.add_middleware(RequestIdMiddleware)
+
+# Rate limiting
+app.add_middleware(RateLimiterMiddleware, requests_per_minute=60, requests_per_hour=1000)
+
+# CORS outermost so preflights are handled before auth/rate-limit logic
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins.split(","),
+    allow_origins=_parse_origins(settings.allowed_origins),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=600,
 )
 
 # Register routers

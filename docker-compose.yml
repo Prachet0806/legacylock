@@ -1,3 +1,8 @@
+# WARNING: This compose file is for LOCAL DEVELOPMENT ONLY.
+# The default credentials (legacylock/legacylock, admin/admin) are INSECURE.
+# For production/staging, ALWAYS override with strong secrets via .env or environment variables.
+# NEVER deploy this file as-is to any non-local environment.
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -14,6 +19,25 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+    networks: ["legacylock"]
+
+  backend:
+    build: ./backend
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://legacylock:legacylock@postgres:5432/legacylock_dev
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set (>=32 chars)}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      HEARTBEAT_CHECK_INTERVAL: ${HEARTBEAT_CHECK_INTERVAL:-3600}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: ["legacylock"]
 
   pgadmin:
     image: dpage/pgadmin4:8
@@ -23,7 +47,13 @@ services:
     ports:
       - "5050:80"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: ["legacylock"]
 
 volumes:
   postgres_data:
+
+networks:
+  legacylock:
