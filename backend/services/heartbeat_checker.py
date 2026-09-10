@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from models import AccessRequest, Beneficiary, HeartbeatConfig, NotificationLog, Vault, VaultStatus
+from models import Beneficiary, HeartbeatConfig, NotificationLog, Vault, VaultStatus
 
 logger = logging.getLogger("legacylock.heartbeat")
 
@@ -115,43 +115,6 @@ def _log_notification(
     db.commit()
 
 
-def _auto_approve_access_requests_sync(db: Session, vault_id: int) -> int:
-    """Auto-approve all pending access requests (sync, in-process). Returns count."""
-    from services.notifications import send_email
-
-    pending_requests = db.query(AccessRequest).filter(
-        AccessRequest.vault_id == vault_id,
-        AccessRequest.status == "pending"
-    ).all()
-
-    for req in pending_requests:
-        req.status = "approved"
-        req.approved_at = datetime.now(UTC)
-        req.expires_at = datetime.now(UTC) + timedelta(days=30)
-        try:
-            email = req.beneficiary.email if req.beneficiary else None
-        except Exception:
-            email = None
-        if email:
-            _schedule_coro(
-                send_email(
-                    email,
-                    "LegacyLock — Access Granted (Vault Triggered)",
-                    "The vault has been triggered. Your access request has been automatically approved. "
-                    "You can now submit your share to reconstruct the vault key.",
-                )
-            )
-
-    if pending_requests:
-        db.commit()
-    return len(pending_requests)
-
-
-async def _auto_approve_access_requests(db: Session, vault_id: int) -> None:
-    """Async wrapper (legacy). Delegates to sync version."""
-    _auto_approve_access_requests_sync(db, vault_id)
-
-
 def _send_grace_notifications(db: Session, vault_id: int, cfg: HeartbeatConfig, vs: VaultStatus) -> None:
     """Send escalating notifications during grace period."""
     from services.notifications import send_email, send_sms
@@ -249,7 +212,7 @@ def check_heartbeat(db: Session) -> list[str]:
     """
     vaults = _get_vaults(db)
     actions = []
-    
+
     for vault in vaults:
         cfg = vault.heartbeat_config
         if not cfg or not cfg.last_check_in:
@@ -266,11 +229,16 @@ def check_heartbeat(db: Session) -> list[str]:
 
         # Active → Grace
         if vs.state == "active" and now > deadline:
-            vs.state = "grace"
-            vs.grace_started_at = now
-            vs.version = (vs.version or 1) + 1
-            vs.updated_at = now
-            db.commit()
+            from services.trigger_service import move_to_grace
+
+            move_to_grace(db, vault.id)
+            try:
+                from services.audit import record_audit
+
+                record_audit(db, vault.id, "system", 0, "heartbeat.grace",
+                             {"reason": "inactivity"})
+            except Exception:
+                pass
             _send_grace_notifications(db, vault.id, cfg, vs)
             actions.append(f"vault_{vault.id}_grace_started")
             continue
@@ -281,15 +249,17 @@ def check_heartbeat(db: Session) -> list[str]:
 
             if now > grace_end:
                 # Grace → Triggered
-                vs.state = "triggered"
-                vs.triggered_at = now
-                vs.trigger_reason = "inactivity"
-                vs.version = (vs.version or 1) + 1
-                vs.updated_at = now
-                db.commit()
+                from services.trigger_service import trigger_vault as _auto_trigger
+
+                _auto_trigger(db, vault.id, reason="inactivity")
+                try:
+                    from services.audit import record_audit
+
+                    record_audit(db, vault.id, "system", 0, "vault.trigger",
+                                 {"reason": "inactivity"})
+                except Exception:
+                    pass
                 _send_trigger_notifications(db, vault.id)
-                # Auto-approve access requests (sync, in-process)
-                _auto_approve_access_requests_sync(db, vault.id)
                 actions.append(f"vault_{vault.id}_triggered")
             else:
                 # Still in grace — check for notification milestones

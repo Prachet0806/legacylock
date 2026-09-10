@@ -9,18 +9,15 @@ missing share_* cols, nullable vault_id drift). DB was wiped per plan, so
 no data migration needed. This baseline mirrors current models/ exactly.
 """
 
-from typing import Sequence, Union
-
+import models  # noqa: F401,I001 - register metadata (I001: first-party imports in logical order)
 from alembic import op
-
 from db import Base
-import models  # noqa: F401 - register metadata
 
 # revision identifiers, used by Alembic.
 revision: str = "000000000000"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: tuple[str, ...] | None = None
+depends_on: str | None = None
 
 
 def upgrade() -> None:

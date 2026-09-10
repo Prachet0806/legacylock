@@ -1,15 +1,16 @@
-from datetime import UTC, datetime
 import secrets
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from models import Beneficiary, User, Vault
-from deps import get_db, require_owner
 from config import get_settings
+from deps import get_db, require_owner
 from logging_config import log_audit
+from models import Beneficiary, User, Vault
+from services.auth import hash_token
 
 router = APIRouter(
     prefix="/beneficiaries",
@@ -26,12 +27,14 @@ class BeneficiaryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     email: EmailStr = Field(..., max_length=320)
     phone: str | None = Field(None, max_length=30)
+    share_index: int | None = Field(None, ge=1, le=3)
 
 
 class BeneficiaryUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     email: EmailStr | None = Field(None, max_length=320)
     phone: str | None = Field(None, max_length=30)
+    share_index: int | None = Field(None, ge=1, le=3)
 
 
 class BeneficiaryOut(BaseModel):
@@ -66,8 +69,15 @@ def _get_vault(db: Session, current_user: User) -> Vault:
 
 
 def _generate_invitation_hash() -> str:
-    """Generate a secure invitation hash."""
+    """Generate a secure invitation token (raw, returned in link)."""
     return secrets.token_urlsafe(32)
+
+
+def _store_invitation(beneficiary: Beneficiary) -> str:
+    """Generate raw invite token, store only its SHA-256 hash. Returns raw for link."""
+    raw = secrets.token_urlsafe(32)
+    beneficiary.invitation_hash = hash_token(raw)
+    return raw
 
 
 async def _send_invitation_email(beneficiary: Beneficiary, invitation_link: str) -> None:
@@ -99,7 +109,7 @@ Secure Digital Legacy""",
 @router.post("", status_code=status.HTTP_201_CREATED)
 def add_beneficiary(data: BeneficiaryCreate, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     vault = _get_vault(db, current_user)
-    
+
     # Check if beneficiary already exists for this vault
     existing = db.query(Beneficiary).filter(
         Beneficiary.vault_id == vault.id,
@@ -107,13 +117,21 @@ def add_beneficiary(data: BeneficiaryCreate, current_user: User = Depends(requir
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="Beneficiary with this email already exists")
-    
+
     entry = Beneficiary(
         vault_id=vault.id,
         name=data.name,
         email=str(data.email),
         phone=data.phone,
+        share_index=data.share_index,
     )
+    if data.share_index is not None:
+        clash = db.query(Beneficiary).filter(
+            Beneficiary.vault_id == vault.id,
+            Beneficiary.share_index == data.share_index,
+        ).first()
+        if clash:
+            raise HTTPException(status_code=409, detail="share_index already assigned")
     db.add(entry)
     try:
         db.commit()
@@ -152,18 +170,19 @@ def list_beneficiaries(current_user: User = Depends(require_owner), db: Session 
 async def invite_beneficiary(beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     """Send invitation email to beneficiary."""
     vault = _get_vault(db, current_user)
-    
+
     beneficiary = db.query(Beneficiary).filter(
         Beneficiary.id == beneficiary_id,
         Beneficiary.vault_id == vault.id
     ).first()
-    
+
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
-    
-    # Generate invitation hash if not exists (rotate if expired)
+
+    # Generate invitation token if not exists (rotate if expired); store hash only.
+    raw_token: str | None = None
     if not beneficiary.invitation_hash or beneficiary.invitation_status == "expired":
-        beneficiary.invitation_hash = _generate_invitation_hash()
+        raw_token = _store_invitation(beneficiary)
 
     beneficiary.invitation_status = "sent"
     beneficiary.invitation_sent_at = datetime.now(UTC)
@@ -171,16 +190,23 @@ async def invite_beneficiary(beneficiary_id: int, current_user: User = Depends(r
         db.commit()
     except IntegrityError:
         db.rollback()
-        beneficiary.invitation_hash = _generate_invitation_hash()
+        raw_token = _store_invitation(beneficiary)
         db.commit()
     db.refresh(beneficiary)
+
+    # Build invitation link (configurable frontend URL). If we reused an existing
+    # hash (already sent, not expired), we cannot recover the raw token — rotate.
+    if raw_token is None:
+        raw_token = _store_invitation(beneficiary)
+        db.commit()
+        db.refresh(beneficiary)
 
     # Build invitation link (configurable frontend URL)
     try:
         frontend_url = get_settings().frontend_origin()
     except Exception:
         frontend_url = "http://localhost:3000"
-    invitation_link = f"{frontend_url}/access/invite/{beneficiary.invitation_hash}"
+    invitation_link = f"{frontend_url}/access/invite/{raw_token}"
 
     # Send email
     await _send_invitation_email(beneficiary, invitation_link)
@@ -188,7 +214,7 @@ async def invite_beneficiary(beneficiary_id: int, current_user: User = Depends(r
         log_audit("beneficiary.invite", "owner", current_user.id, vault.id)
     except Exception:
         pass
-    
+
     return {
         "message": "Invitation sent",
         "invitation_link": invitation_link,
@@ -199,21 +225,30 @@ async def invite_beneficiary(beneficiary_id: int, current_user: User = Depends(r
 @router.put("/{beneficiary_id}")
 def update_beneficiary(beneficiary_id: int, data: BeneficiaryUpdate, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     vault = _get_vault(db, current_user)
-    
+
     beneficiary = db.query(Beneficiary).filter(
         Beneficiary.id == beneficiary_id,
         Beneficiary.vault_id == vault.id
     ).first()
-    
+
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
-    
+
     if data.name is not None:
         beneficiary.name = data.name
     if data.email is not None:
         beneficiary.email = str(data.email)
     if data.phone is not None:
         beneficiary.phone = data.phone
+    if data.share_index is not None:
+        clash = db.query(Beneficiary).filter(
+            Beneficiary.vault_id == vault.id,
+            Beneficiary.share_index == data.share_index,
+            Beneficiary.id != beneficiary.id,
+        ).first()
+        if clash:
+            raise HTTPException(status_code=409, detail="share_index already assigned")
+        beneficiary.share_index = data.share_index
 
     beneficiary.updated_at = datetime.now(UTC)
     db.commit()
@@ -224,6 +259,42 @@ def update_beneficiary(beneficiary_id: int, data: BeneficiaryUpdate, current_use
         pass
 
     return {"message": "Beneficiary updated"}
+
+
+class ShareAssignRequest(BaseModel):
+    share_index: int = Field(..., ge=1, le=3)
+
+
+@router.post("/{beneficiary_id}/assign-share")
+def assign_share(
+    beneficiary_id: int,
+    data: ShareAssignRequest,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Assign a Shamir share index (metadata only, never raw share values)."""
+    vault = _get_vault(db, current_user)
+    beneficiary = db.query(Beneficiary).filter(
+        Beneficiary.id == beneficiary_id,
+        Beneficiary.vault_id == vault.id,
+    ).first()
+    if not beneficiary:
+        raise HTTPException(status_code=404, detail="Beneficiary not found")
+    clash = db.query(Beneficiary).filter(
+        Beneficiary.vault_id == vault.id,
+        Beneficiary.share_index == data.share_index,
+        Beneficiary.id != beneficiary.id,
+    ).first()
+    if clash:
+        raise HTTPException(status_code=409, detail="share_index already assigned")
+    beneficiary.share_index = data.share_index
+    beneficiary.updated_at = datetime.now(UTC)
+    db.commit()
+    try:
+        log_audit("beneficiary.share_assign", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
+    return {"message": "Share index assigned", "share_index": data.share_index}
 
 
 @router.delete("/{beneficiary_id}", status_code=status.HTTP_204_NO_CONTENT)

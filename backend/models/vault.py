@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
@@ -32,5 +33,4 @@ class Vault(Base):
     messages = relationship("VaultMessage", back_populates="vault", cascade="all, delete-orphan")
     beneficiaries = relationship("Beneficiary", back_populates="vault", cascade="all, delete-orphan")
     status = relationship("VaultStatus", back_populates="vault", cascade="all, delete-orphan", uselist=False)
-    access_requests = relationship("AccessRequest", back_populates="vault", cascade="all, delete-orphan")
     heartbeat_config = relationship("HeartbeatConfig", back_populates="vault", cascade="all, delete-orphan", uselist=False)

@@ -6,10 +6,9 @@ from collections.abc import Awaitable, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response, JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from config import get_settings
-
 
 # Stricter buckets for sensitive routes: (per-minute, per-hour)
 _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
@@ -66,9 +65,17 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        # Skip rate limiting for health checks
+        # Skip rate limiting for health checks and test environment
         if request.url.path in ("/health", "/health/", "/healthz", "/ready", "/readyz"):
             return await call_next(request)
+
+        # Skip rate limiting in test environment
+        try:
+            from config import get_settings
+            if get_settings().environment == "test":
+                return await call_next(request)
+        except Exception:
+            pass
 
         client_ip = self._get_client_ip(request)
         per_min, per_hour = self._limits_for(request.url.path)

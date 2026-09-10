@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { VaultProvider } from "../lib/store/vault-context";
 
 export const metadata: Metadata = {
   title: "LegacyLock",
@@ -9,7 +10,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body style={{ fontFamily: "sans-serif", margin: 0 }}>
+        <VaultProvider>{children}</VaultProvider>
+      </body>
     </html>
   );
 }

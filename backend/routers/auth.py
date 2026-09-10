@@ -1,24 +1,25 @@
 """Authentication routes — login, logout, token refresh, current user."""
 
 from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from config import get_settings
-from models import User, Vault, RefreshToken
+from deps import get_db, require_owner
+from models import RefreshToken, User, Vault
 from services.auth import (
     RefreshReuseError,
     create_access_token,
     create_refresh_token,
+    decode_access_token,
+    revoke_refresh_token_family,
+    rotate_refresh_token,
     verify_password,
     verify_refresh_token,
-    revoke_refresh_token_family,
-    decode_access_token,
-    rotate_refresh_token,
 )
-from deps import get_db, require_owner
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

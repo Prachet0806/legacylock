@@ -8,10 +8,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import User, Vault, VaultStatus
+from config import get_settings
 from deps import get_db, require_owner
+from models import User, Vault, VaultStatus
 from services.auth import verify_password
-from logging_config import log_audit
+from services.audit import record_audit
+from services.trigger_service import trigger_vault as _trigger_vault
 
 router = APIRouter(
     prefix="/vault",
@@ -50,13 +52,6 @@ def _get_or_create_vault_status(db: Session, vault_id: int) -> VaultStatus:
     return vs
 
 
-def _auto_approve_access_requests_sync(db: Session, vault_id: int) -> None:
-    """Synchronous auto-approve for use in request context (in-process)."""
-    from services.heartbeat_checker import _auto_approve_access_requests_sync as _approve
-
-    _approve(db, vault_id)
-
-
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -71,8 +66,9 @@ class VaultStatusOut(BaseModel):
 
 
 class TriggerRequest(BaseModel):
-    """Manual trigger requires re-authentication with password."""
+    """Manual trigger requires re-authentication with password + explicit confirm."""
     password: str = Field(..., min_length=12, max_length=256, description="Owner's login password for re-authentication")
+    confirm: Literal[True]
 
 
 class ResetStatusRequest(BaseModel):
@@ -100,38 +96,27 @@ def get_status(current_user: User = Depends(require_owner), db: Session = Depend
 
 
 @router.post("/trigger")
-def trigger_vault(data: TriggerRequest, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
-    """Manually trigger the vault (requires re-authentication)."""
+def trigger_vault_route(data: TriggerRequest, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+    """Manually trigger the vault (requires re-authentication + confirm:true). Idempotent."""
     # Verify password for re-authentication
     if not verify_password(data.password, current_user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid password")
 
     vault = _get_vault(db, current_user)
-    vs = _get_or_create_vault_status(db, vault.id)
-    if vs.state == "triggered":
-        raise HTTPException(status_code=409, detail="Vault has already been triggered.")
+    vs, already = _trigger_vault(db, vault.id, reason="manual")
+    record_audit(db, vault.id, "owner", current_user.id, "vault.trigger",
+                 {"reason": "manual", "already": already})
 
-    now = datetime.now(UTC)
-    vs.state = "triggered"
-    vs.triggered_at = now
-    vs.trigger_reason = "manual"
-    vs.version = (vs.version or 1) + 1
-    vs.updated_at = now
-    db.commit()
-
-    # Auto-approve pending access requests (sync, in-process, with notifications)
-    _auto_approve_access_requests_sync(db, vault.id)
-    try:
-        log_audit("vault.trigger", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
-
-    return {"message": "Vault triggered — beneficiaries will receive access.", "triggered_at": vs.triggered_at.isoformat()}
+    return {"message": "Vault triggered — beneficiaries will receive access.",
+            "triggered_at": vs.triggered_at.isoformat() if vs.triggered_at else "",
+            "already": already}
 
 
 @router.post("/reset-status")
 def reset_status(data: ResetStatusRequest, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
-    """Reset vault back to active (requires re-authentication + confirm:true)."""
+    """Reset vault back to active (requires re-authentication + confirm:true). Dev/test only."""
+    if get_settings().environment == "production":
+        raise HTTPException(status_code=404, detail="Not found")
     # Verify password for re-authentication
     if not verify_password(data.password, current_user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid password")
@@ -146,8 +131,5 @@ def reset_status(data: ResetStatusRequest, current_user: User = Depends(require_
     vs.version = (vs.version or 1) + 1
     vs.updated_at = now
     db.commit()
-    try:
-        log_audit("vault.reset", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
+    record_audit(db, vault.id, "owner", current_user.id, "vault.reset", {})
     return {"message": "Vault status reset to active."}

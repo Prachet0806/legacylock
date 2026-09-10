@@ -2,7 +2,7 @@
 
 import pytest
 
-TRIGGER_BODY = {"password": "TestPass123!Long"}
+TRIGGER_BODY = {"password": "TestPass123!Long", "confirm": True}
 RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
 
 
@@ -59,14 +59,18 @@ class TestVaultTrigger:
         # Should parse without exception
         datetime.fromisoformat(res["triggered_at"].replace("Z", "+00:00"))
 
-    def test_trigger_idempotent_returns_409(self, client, auth):
+    def test_trigger_idempotent_returns_200(self, client, auth):
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         second = client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
-        assert second.status_code == 409
-        assert "already been triggered" in second.json()["detail"].lower()
+        assert second.status_code == 200
+        assert second.json().get("already") is True
+
+    def test_trigger_requires_confirm(self, client, auth):
+        res = client.post("/vault/trigger", json={"password": "TestPass123!Long"}, headers=auth)
+        assert res.status_code == 422
 
     def test_trigger_wrong_password(self, client, auth):
-        res = client.post("/vault/trigger", json={"password": "wrong-password-123"}, headers=auth)
+        res = client.post("/vault/trigger", json={"password": "wrong-password-123", "confirm": True}, headers=auth)
         assert res.status_code == 401
 
 

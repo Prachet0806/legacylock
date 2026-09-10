@@ -5,9 +5,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import HeartbeatConfig, User, Vault, VaultStatus
 from deps import get_db, require_owner
 from logging_config import log_audit
+from models import HeartbeatConfig, User, Vault, VaultStatus
 
 router = APIRouter(
     prefix="/heartbeat",

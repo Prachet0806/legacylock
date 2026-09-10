@@ -4,7 +4,7 @@ import base64
 
 _WMEK = base64.b64encode(b"0" * 32).decode()
 WIPE_BODY = {"password": "TestPass123!Long", "confirm": True}
-TRIGGER_BODY = {"password": "TestPass123!Long"}
+TRIGGER_BODY = {"password": "TestPass123!Long", "confirm": True}
 RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
 
 

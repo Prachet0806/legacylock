@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
@@ -15,6 +16,9 @@ class VaultMessage(Base):
     wrapped_mek = Column(Text, nullable=False)
     crypto_version = Column(Integer, nullable=False, default=1)
     crypto_metadata = Column(Text, nullable=False)
+    # Coverage plumbing only (advisor UI deferred): nullable until set.
+    category = Column(String(50), nullable=True)
+    coverage_tags = Column(Text, nullable=True)  # JSON-encoded list[str]
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

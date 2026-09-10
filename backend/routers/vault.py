@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from deps import get_db, require_owner
+from logging_config import log_audit
 from models import User, Vault, VaultMessage
 from services.auth import verify_password
-from logging_config import log_audit
 
 router = APIRouter(
     prefix="/vault",
@@ -31,6 +31,16 @@ class MessageRequest(BaseModel):
     iv: str | None = Field(None, max_length=100)
     crypto_version: Literal[1] = 1
     crypto_metadata: dict | None = None
+    # Coverage plumbing only (advisor UI deferred): optional free-form validated below.
+    category: str | None = Field(None, max_length=50)
+    coverage_tags: list[str] | None = Field(None, max_length=20)
+
+
+MESSAGE_CATEGORIES = {
+    "financial", "insurance", "digital_assets", "digital_identity",
+    "digital_storage", "devices", "online_accounts", "property",
+    "dependents", "business", "personal",
+}
 
 
 def _require_b64(value: str, field: str, max_raw: int) -> None:
@@ -59,6 +69,8 @@ class MessageDetail(BaseModel):
     crypto_version: int
     crypto_metadata: dict
     created_at: str
+    category: str | None = None
+    coverage_tags: list[str] = []
     model_config = {"from_attributes": True}
 
 
@@ -133,6 +145,12 @@ def save_message(
     if data.iv and "iv" not in metadata_dict:
         metadata_dict["iv"] = data.iv
 
+    if data.category is not None and data.category not in MESSAGE_CATEGORIES:
+        raise HTTPException(status_code=422, detail="Invalid category")
+    tags = data.coverage_tags or []
+    if len(tags) > 20 or any(not isinstance(t, str) or len(t) > 50 for t in tags):
+        raise HTTPException(status_code=422, detail="Invalid coverage_tags")
+
     message = VaultMessage(
         vault_id=vault.id,
         label=data.label,
@@ -140,6 +158,8 @@ def save_message(
         wrapped_mek=data.wrapped_mek,
         crypto_version=data.crypto_version,
         crypto_metadata=json.dumps(metadata_dict),
+        category=data.category,
+        coverage_tags=json.dumps(tags),
     )
     db.add(message)
     db.commit()
@@ -195,6 +215,12 @@ def load_message(
     if not isinstance(metadata, dict):
         raise HTTPException(status_code=500, detail="Stored crypto metadata is corrupt")
     iv_str = metadata.get("iv", "")
+    try:
+        tags = json.loads(message.coverage_tags) if message.coverage_tags else []
+    except Exception:
+        tags = []
+    if not isinstance(tags, list):
+        tags = []
 
     return MessageDetail(
         id=message.id,
@@ -206,6 +232,8 @@ def load_message(
         crypto_version=message.crypto_version,
         crypto_metadata=metadata,
         created_at=message.created_at.isoformat() if message.created_at else "",
+        category=message.category,
+        coverage_tags=tags,
     )
 
 
@@ -238,6 +266,8 @@ class MessageUpdate(BaseModel):
     wrapped_mek: str | None = Field(None, max_length=100_000)
     iv: str | None = Field(None, max_length=100)
     crypto_metadata: dict | None = None
+    category: str | None = Field(None, max_length=50)
+    coverage_tags: list[str] | None = None
 
 
 @router.put("/messages/{message_id}")
@@ -263,6 +293,18 @@ def update_message(
 
     if data.label is not None:
         message.label = data.label
+
+    if data.category is not None:
+        if data.category not in MESSAGE_CATEGORIES:
+            raise HTTPException(status_code=422, detail="Invalid category")
+        message.category = data.category
+
+    if data.coverage_tags is not None:
+        if len(data.coverage_tags) > 20 or any(
+            not isinstance(t, str) or len(t) > 50 for t in data.coverage_tags
+        ):
+            raise HTTPException(status_code=422, detail="Invalid coverage_tags")
+        message.coverage_tags = json.dumps(data.coverage_tags)
 
     if data.wrapped_mek is not None:
         _require_b64(data.wrapped_mek, "wrapped_mek", 100_000)
@@ -376,3 +418,33 @@ def save_crypto_material(
         pass
 
     return {"message": "Crypto material saved successfully"}
+
+
+class ShareAssignmentOut(BaseModel):
+    beneficiary_id: int
+    beneficiary_name: str
+    beneficiary_email: str
+    share_index: int | None
+    invitation_status: str
+
+
+@router.get("/share-assignments", response_model=list[ShareAssignmentOut])
+def list_share_assignments_vault(
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Metadata-only share assignments (alias of /access/share-assignments per API spec)."""
+    from models import Beneficiary as BeneficiaryModel
+
+    vault = _get_vault(db, current_user)
+    rows = db.query(BeneficiaryModel).filter(BeneficiaryModel.vault_id == vault.id).all()
+    return [
+        ShareAssignmentOut(
+            beneficiary_id=r.id,
+            beneficiary_name=r.name,
+            beneficiary_email=r.email,
+            share_index=r.share_index,
+            invitation_status=r.invitation_status,
+        )
+        for r in rows
+    ]

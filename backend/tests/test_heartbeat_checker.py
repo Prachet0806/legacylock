@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from models import HeartbeatConfig, NotificationLog, VaultStatus, Vault, User
+from models import HeartbeatConfig, NotificationLog, User, Vault, VaultStatus
 from services.auth import hash_password
 
 

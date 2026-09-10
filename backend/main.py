@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
 from db import SessionLocal, init_db
 from logging_config import setup_logging
-from middleware import RequestIdMiddleware, SecurityHeadersMiddleware, RateLimiterMiddleware
-from routers import access, auth, beneficiaries, health, heartbeat, shares, stats, trigger, vault
+from middleware import RateLimiterMiddleware, RequestIdMiddleware, SecurityHeadersMiddleware
+from routers import access, auth, beneficiaries, health, heartbeat, stats, trigger, vault
 from services.heartbeat_checker import check_heartbeat
 
 settings = get_settings()
@@ -57,10 +57,11 @@ async def _heartbeat_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Fail closed on bad secrets before serving traffic (invalidates old tokens)
-    from services.auth import _get_jwt_secret
+    # Fail closed on bad keys before serving traffic (invalidates old tokens)
+    from services.auth import _get_jwt_private_key, _get_jwt_public_key
 
-    _get_jwt_secret()
+    _get_jwt_private_key()
+    _get_jwt_public_key()
     # In test env init_db creates tables; in prod Alembic owns schema.
     if settings.environment != "production":
         init_db()
@@ -100,8 +101,6 @@ app.include_router(beneficiaries.router)
 app.include_router(heartbeat.router)
 app.include_router(stats.router)
 app.include_router(trigger.router)
-app.include_router(shares.router)
-app.include_router(shares.public_router)
 app.include_router(access.public_router)
 app.include_router(access.router)
 app.include_router(access.owner_router)

@@ -3,14 +3,13 @@
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Optional
 
 import jwt
 from argon2 import PasswordHasher
 from sqlalchemy.orm import Session
 
 from config import get_settings
-from models import RefreshToken, User
+from models import RefreshToken
 
 # Argon2id password hasher
 ph = PasswordHasher(
@@ -22,20 +21,25 @@ ph = PasswordHasher(
 )
 
 # JWT settings
-JWT_ALGORITHM = "HS256"
+JWT_ALGORITHM = "RS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 
-def _get_jwt_secret() -> str:
-    """Return JWT secret, failing closed if misconfigured (no test fallback)."""
+def _get_jwt_private_key() -> str:
+    """Return JWT private key for signing, failing closed if misconfigured."""
     try:
-        secret = get_settings().session_secret
+        return get_settings().jwt_private_key()
     except Exception as exc:
-        raise RuntimeError("SESSION_SECRET is not configured") from exc
-    if not secret or len(secret) < 32:
-        raise RuntimeError("SESSION_SECRET must be at least 32 characters")
-    return secret
+        raise RuntimeError("JWT private key not configured") from exc
+
+
+def _get_jwt_public_key() -> str:
+    """Return JWT public key for verification, failing closed if misconfigured."""
+    try:
+        return get_settings().jwt_public_key()
+    except Exception as exc:
+        raise RuntimeError("JWT public key not configured") from exc
 
 
 def hash_password(password: str) -> str:
@@ -77,7 +81,7 @@ def create_access_token(user_id: int, vault_id: int, role: str) -> str:
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
     }
-    return jwt.encode(payload, _get_jwt_secret(), algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, _get_jwt_private_key(), algorithm=JWT_ALGORITHM)
 
 
 def create_refresh_token(user_id: int, vault_id: int, db: Session) -> tuple[str, str]:
@@ -131,7 +135,7 @@ class RefreshReuseError(Exception):
     """Raised when a revoked (already-rotated) refresh token is presented."""
 
 
-def verify_refresh_token(token: str, db: Session) -> Optional[RefreshToken]:
+def verify_refresh_token(token: str, db: Session) -> RefreshToken | None:
     """Verify a refresh token via SHA-256 hash lookup in O(1) time.
 
     Raises RefreshReuseError if a revoked-but-replaced token is presented
@@ -182,11 +186,11 @@ def revoke_refresh_token_family(family_id: str, db: Session) -> None:
     db.commit()
 
 
-def decode_access_token(token: str) -> Optional[dict]:
-    """Decode and validate an access token using configured secret."""
+def decode_access_token(token: str) -> dict | None:
+    """Decode and validate an access token using configured public key."""
     try:
-        secret = _get_jwt_secret()
-        payload = jwt.decode(token, secret, algorithms=[JWT_ALGORITHM])
+        public_key = _get_jwt_public_key()
+        payload = jwt.decode(token, public_key, algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             return None
         if payload.get("role") not in ("owner", "beneficiary"):

@@ -69,7 +69,7 @@ class TestVaultCRUD:
         res = client.get(f"/vault/messages/{msg_id}", headers=auth)
         assert res.status_code == 200
         data = res.json()
-        assert data["encrypted_content"] == MESSAGE_A["encrypted_content"]
+        assert data["ciphertext"] == MESSAGE_A["ciphertext"]
         assert data["label"] == MESSAGE_A["label"]
 
     def test_get_not_found(self, client, auth):
@@ -79,13 +79,13 @@ class TestVaultCRUD:
     def test_update_message(self, client, auth):
         post = client.post("/vault/messages", json=MESSAGE_A, headers=auth)
         msg_id = post.json()["id"]
-        updated = {"label": "Updated Label", "encrypted_content": "bmV3Y2lwaGVydGV4dA=="}
+        updated = {"label": "Updated Label", "ciphertext": "bmV3Y2lwaGVydGV4dA=="}
         res = client.put(f"/vault/messages/{msg_id}", json=updated, headers=auth)
         assert res.status_code == 200
         # Verify the update was persisted
         get = client.get(f"/vault/messages/{msg_id}", headers=auth)
         assert get.json()["label"] == "Updated Label"
-        assert get.json()["encrypted_content"] == updated["encrypted_content"]
+        assert get.json()["ciphertext"] == updated["ciphertext"]
 
     def test_update_not_found(self, client, auth):
         res = client.put("/vault/messages/99999", json=MESSAGE_A, headers=auth)

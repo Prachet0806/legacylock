@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+
 from sqlalchemy import Column, DateTime, Integer, String, Text
 from sqlalchemy.orm import relationship
 
@@ -24,4 +25,3 @@ class User(Base):
     )
 
     vaults = relationship("Vault", back_populates="owner", cascade="all, delete-orphan")
-    approved_access_requests = relationship("AccessRequest", back_populates="approver", cascade="all, delete-orphan")

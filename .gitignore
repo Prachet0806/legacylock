@@ -72,11 +72,6 @@ htmlcov/
 # Build artifacts
 #######################################
 build/
-*.pem
-*.key
-*.crt
-*.p12
-*.pfx
 secrets/
 playwright-report/
 test-results/

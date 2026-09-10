@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from models import Beneficiary, HeartbeatConfig, User, Vault, VaultMessage, VaultStatus
 from deps import get_db, require_owner
+from models import Beneficiary, HeartbeatConfig, User, Vault, VaultMessage, VaultStatus
 
 router = APIRouter(
     prefix="/stats",

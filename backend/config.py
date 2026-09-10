@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:3000"
     trusted_proxies: str = ""
     heartbeat_enabled: bool = True
+    # JWT RS256 keys (paths relative to backend/ or absolute)
+    jwt_private_key_path: str = "keys/jwt_private.pem"
+    jwt_public_key_path: str = "keys/jwt_public.pem"
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",
@@ -30,6 +33,20 @@ class Settings(BaseSettings):
 
     def frontend_origin(self) -> str:
         return self.frontend_url.rstrip("/")
+
+    def jwt_private_key(self) -> str:
+        """Load RSA private key for JWT signing."""
+        path = Path(self.jwt_private_key_path)
+        if not path.is_absolute():
+            path = ROOT_DIR / "backend" / path
+        return path.read_text()
+
+    def jwt_public_key(self) -> str:
+        """Load RSA public key for JWT verification."""
+        path = Path(self.jwt_public_key_path)
+        if not path.is_absolute():
+            path = ROOT_DIR / "backend" / path
+        return path.read_text()
 
 
 @lru_cache
