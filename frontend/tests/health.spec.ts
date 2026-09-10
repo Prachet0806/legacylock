@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("health page renders", async ({ page }) => {
+test("brand link is visible on login", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("LegacyLock")).toBeVisible();
+  await expect(page.getByText("LegacyLock").first()).toBeVisible();
 });

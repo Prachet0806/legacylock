@@ -147,10 +147,54 @@ export const submitShare = (shareHash: string) =>
     headers: beneficiaryHeaders(),
     body: JSON.stringify({ share: shareHash }),
   });
+export const reportMismatch = () =>
+  apiFetch<{ message: string }>("/access/share/report-mismatch", {
+    method: "POST",
+    headers: beneficiaryHeaders(),
+  });
+export interface RecoveryMessageMeta {
+  id: number;
+  label: string;
+  category: string | null;
+  created_at: string;
+}
+export interface RecoveryMessageDetail {
+  id: number;
+  label: string;
+  ciphertext: string;
+  wrapped_mek: string;
+  iv: string;
+  crypto_version: number;
+  category: string | null;
+  created_at: string;
+}
+export const listRecoveryMessages = () =>
+  apiFetch<RecoveryMessageMeta[]>("/access/messages", { headers: beneficiaryHeaders() });
+export const getRecoveryMessage = (id: number) =>
+  apiFetch<RecoveryMessageDetail>(`/access/messages/${id}`, { headers: beneficiaryHeaders() });
+export const assignShare = (beneficiaryId: number, share_index: number) =>
+  apiFetch<{ message: string; share_index: number }>(
+    `/beneficiaries/${beneficiaryId}/assign-share`,
+    { method: "POST", body: JSON.stringify({ share_index }) },
+  );
 
 // --- stats ---
-export const getStats = () =>
-  apiFetch<Record<string, number>>("/stats");
+export interface Stats {
+  message_count: number;
+  beneficiary_count: number;
+  last_check_in: string | null;
+  heartbeat_interval: number | null;
+  heartbeat_grace: number | null;
+  vault_status: string;
+}
+export const getStats = () => apiFetch<Stats>("/stats");
+export const getMessagesCount = async () => ({ count: (await listMessages()).length });
+export const getBeneficiariesCount = async () => ({ count: (await listBeneficiaries()).length });
+export const wipeVault = (password: string) =>
+  apiFetch<void>("/vault/messages", {
+    method: "DELETE",
+    body: JSON.stringify({ password, confirm: true }),
+  });
 
 // --- categories (plumbing only; advisor UI deferred) ---
 export const MESSAGE_CATEGORIES = [

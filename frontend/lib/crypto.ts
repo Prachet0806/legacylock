@@ -4,7 +4,9 @@
 
 export const CRYPTO_VERSION = 1;
 export const KDF_ALGORITHM = "PBKDF2-SHA256";
-export const KDF_ITERATIONS = 100_000;
+// OWASP-aligned work factor for PBKDF2-HMAC-SHA256. Stored per-vault in
+// vmk_kdf_parameters, so existing vaults keep unlocking with their own count.
+export const KDF_ITERATIONS = 600_000;
 export const VMK_LENGTH = 32;
 export const MEK_LENGTH = 32;
 export const SALT_LENGTH = 16;

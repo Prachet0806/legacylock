@@ -9,6 +9,7 @@ This module handles:
 
 import secrets
 from datetime import UTC, datetime, timedelta
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from config import get_settings
 from deps import get_current_beneficiary, get_db, require_beneficiary, require_owner
-from models import Beneficiary, User, Vault, VaultStatus
+from models import Beneficiary, User, Vault, VaultMessage, VaultStatus
 from services.auth import create_access_token, hash_token
 
 # Public router — no auth required (for invitation acceptance)
@@ -315,6 +316,112 @@ def submit_share(
     if not raw:
         raise HTTPException(status_code=400, detail="share is required")
     return _submit(db, vault.id, current_beneficiary.id, raw)
+
+
+class RecoveryMessageMeta(BaseModel):
+    id: int
+    label: str
+    category: str | None = None
+    created_at: str
+
+
+class RecoveryMessageDetail(BaseModel):
+    id: int
+    label: str
+    ciphertext: str
+    wrapped_mek: str
+    iv: str
+    crypto_version: int
+    category: str | None = None
+    created_at: str
+
+
+def _require_triggered(db: Session, vault_id: int) -> None:
+    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault_id).first()
+    if not vs or vs.state != "triggered":
+        raise HTTPException(status_code=403, detail="Vault not triggered")
+
+
+@router.post("/share/report-mismatch")
+def report_share_mismatch(
+    current_beneficiary: Beneficiary = Depends(require_beneficiary),
+    db: Session = Depends(get_db),
+):
+    """Report that submitted shares failed local reconstruction.
+
+    Feeds the per-beneficiary invalid-attempt counter (INV-20): after
+    MAX_FAILURES mismatches the beneficiary is locked out for 15 minutes.
+    Vault must be TRIGGERED.
+    """
+    from services.share_service import report_mismatch as _report
+
+    vault = _get_vault(db, current_beneficiary)
+    _require_triggered(db, vault.id)
+    _report(db, vault.id, current_beneficiary.id)
+    return {"message": "Mismatch recorded"}
+
+
+@router.get("/messages", response_model=list[RecoveryMessageMeta])
+def list_recovery_messages(
+    current_beneficiary: Beneficiary = Depends(require_beneficiary),
+    db: Session = Depends(get_db),
+):
+    """List message metadata for beneficiary recovery (TRIGGERED only).
+
+    Returns ciphertext-free metadata; fetch each message to get its
+    ciphertext + wrapped MEK for local decryption. Never plaintext.
+    """
+    vault = _get_vault(db, current_beneficiary)
+    _require_triggered(db, vault.id)
+    rows = (
+        db.query(VaultMessage)
+        .filter(VaultMessage.vault_id == vault.id)
+        .order_by(VaultMessage.created_at.desc())
+        .all()
+    )
+    return [
+        RecoveryMessageMeta(
+            id=m.id,
+            label=m.label,
+            category=m.category,
+            created_at=m.created_at.isoformat() if m.created_at else "",
+        )
+        for m in rows
+    ]
+
+
+@router.get("/messages/{message_id}", response_model=RecoveryMessageDetail)
+def get_recovery_message(
+    message_id: int,
+    current_beneficiary: Beneficiary = Depends(require_beneficiary),
+    db: Session = Depends(get_db),
+):
+    """Get one message's ciphertext + wrapped MEK (TRIGGERED only, vault-scoped)."""
+    vault = _get_vault(db, current_beneficiary)
+    _require_triggered(db, vault.id)
+    message = (
+        db.query(VaultMessage)
+        .filter(VaultMessage.id == message_id, VaultMessage.vault_id == vault.id)
+        .first()
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+    try:
+        metadata = json.loads(message.crypto_metadata) if message.crypto_metadata else {}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Stored crypto metadata is corrupt") from exc
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=500, detail="Stored crypto metadata is corrupt")
+    return RecoveryMessageDetail(
+        id=message.id,
+        label=message.label,
+        ciphertext=message.ciphertext,
+        wrapped_mek=message.wrapped_mek,
+        iv=metadata.get("iv", ""),
+        crypto_version=message.crypto_version,
+        category=message.category,
+        created_at=message.created_at.isoformat() if message.created_at else "",
+    )
 
 
 # ---------------------------------------------------------------------------

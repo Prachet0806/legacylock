@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* LegacyLock design tokens. Dark is the default theme; the light set is
+   already defined so a future toggle only needs to flip `data-theme`. */
+
+:root,
+[data-theme="dark"] {
+  --bg: 10 12 16;
+  --surface: 17 21 28;
+  --raised: 24 30 40;
+  --border: 36 44 58;
+  --text: 235 238 243;
+  --muted: 158 170 186;
+  --faint: 108 120 138;
+  --accent: 212 175 55;
+  --danger: 229 83 83;
+  --success: 74 180 120;
+  --warn: 232 168 56;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: 246 247 249;
+  --surface: 255 255 255;
+  --raised: 238 241 245;
+  --border: 222 227 233;
+  --text: 22 28 36;
+  --muted: 90 102 118;
+  --faint: 140 151 166;
+  --accent: 158 124 28;
+  --danger: 190 45 45;
+  --success: 46 139 88;
+  --warn: 176 118 18;
+  color-scheme: light;
+}
+
+html,
+body {
+  background-color: rgb(var(--bg));
+  color: rgb(var(--text));
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-border bg-surface p-5;
+  }
+  .input {
+    @apply w-full rounded-md border border-border bg-raised px-3 py-2 text-sm text-text placeholder:text-faint outline-none focus:border-accent;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-accent text-black hover:brightness-110;
+  }
+  .btn-ghost {
+    @apply btn border border-border bg-transparent text-text hover:bg-raised;
+  }
+  .btn-danger {
+    @apply btn bg-danger text-white hover:brightness-110;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium uppercase tracking-wider text-muted;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs text-muted;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

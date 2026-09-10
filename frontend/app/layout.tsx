@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { VaultProvider } from "../lib/store/vault-context";
+import { ToastProvider } from "../components/toast";
+import { AppShell } from "../components/shell";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: "LegacyLock",
@@ -9,9 +12,13 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body style={{ fontFamily: "sans-serif", margin: 0 }}>
-        <VaultProvider>{children}</VaultProvider>
+    <html lang="en" data-theme="dark">
+      <body className="m-0 font-sans antialiased">
+        <VaultProvider>
+          <ToastProvider>
+            <AppShell>{children}</AppShell>
+          </ToastProvider>
+        </VaultProvider>
       </body>
     </html>
   );

@@ -84,6 +84,55 @@ class TestShareAssignments:
                 assert "wrapped" not in str(list(row.keys())).lower()
 
 
+class TestRecoveryMessages:
+    def _setup(self, client, auth):
+        import base64
+        wmek = base64.b64encode(b"0" * 32).decode()
+        ct = base64.b64encode(b"x" * 16).decode()
+        mid = client.post(
+            "/vault/messages",
+            json={"label": "will", "ciphertext": ct, "wrapped_mek": wmek},
+            headers=auth,
+        ).json()["id"]
+        raw = _invite_link(client, auth)
+        token = client.post(f"/access/invite/{raw}/accept").json()["access_token"]
+        return mid, {"Authorization": f"Bearer {token}"}
+
+    def test_gated_before_trigger(self, client, auth):
+        _, bh = self._setup(client, auth)
+        assert client.get("/access/messages", headers=bh).status_code == 403
+        assert client.get("/access/messages/1", headers=bh).status_code == 403
+
+    def test_list_and_get_after_trigger(self, client, auth):
+        mid, bh = self._setup(client, auth)
+        client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
+        try:
+            rows = client.get("/access/messages", headers=bh).json()
+            assert len(rows) == 1
+            assert rows[0]["label"] == "will"
+            assert "ciphertext" not in rows[0]
+            detail = client.get(f"/access/messages/{mid}", headers=bh).json()
+            assert detail["ciphertext"]
+            assert detail["wrapped_mek"]
+            assert "plaintext" not in str(detail.keys()).lower()
+            assert client.get("/access/messages/99999", headers=bh).status_code == 404
+        finally:
+            client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
+
+    def test_mismatch_locks_out(self, client, auth):
+        _, bh = self._setup(client, auth)
+        client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
+        try:
+            for _ in range(5):
+                assert client.post("/access/share/report-mismatch", headers=bh).status_code == 200
+            # locked: next submit of a *new* share is rejected
+            import base64
+            new_share = base64.b64encode(b"n" * 48).decode()
+            assert client.post("/access/share", json={"share": new_share}, headers=bh).status_code == 429
+        finally:
+            client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
+
+
 class TestAuditPersisted:
     def test_trigger_writes_audit_row(self, client, auth):
         from db import SessionLocal
