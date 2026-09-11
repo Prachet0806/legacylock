@@ -4,7 +4,7 @@
 // vault wipe (deletes all encrypted messages, requires login password).
 import { useState } from "react";
 import { AlertOctagon, KeyRound, Trash2 } from "lucide-react";
-import { rewrapVMK } from "../../lib/crypto";
+import { CRYPTO_VERSION, rewrapVMK } from "../../lib/crypto";
 import { putCryptoMaterial, wipeVault } from "../../lib/client";
 import { useVault } from "../../lib/store/vault-context";
 import { Modal, Spinner } from "../../components/ui";
@@ -39,17 +39,18 @@ export default function SettingsPage() {
       const material = await rewrapVMK(vmk, newPass);
       await putCryptoMaterial({
         wrapped_vmk: material.wrapped_vmk_b64,
-        vmk_crypto_version: 1,
+        vmk_crypto_version: CRYPTO_VERSION,
         vmk_kdf_algorithm: "PBKDF2-SHA256",
         vmk_kdf_salt: material.vmk_kdf_salt_b64,
         vmk_kdf_parameters: material.vmk_kdf_parameters,
       });
-      setNewPass("");
-      setConfirmPass("");
       notify("success", "Passphrase changed. Same vault key, new wrapping.");
     } catch {
       notify("error", "Passphrase change failed.");
     } finally {
+      // Drop both copies from state whether it worked or not.
+      setNewPass("");
+      setConfirmPass("");
       setBusy(false);
     }
   }

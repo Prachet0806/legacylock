@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { decryptMessage, encryptMessage, unlockVMK } from "../../lib/crypto";
+import { CRYPTO_VERSION, decryptMessage, encryptMessage, unlockVMK } from "../../lib/crypto";
 import {
   createMessage,
   deleteMessage,
@@ -42,10 +42,16 @@ export default function VaultPage() {
   const [opened, setOpened] = useState<{ label: string; text: string } | null>(null);
   const [openingId, setOpeningId] = useState<number | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [loadingList, setLoadingList] = useState(false);
   const [err, setErr] = useState("");
 
   async function refresh() {
-    setMessages(await listMessages());
+    setLoadingList(true);
+    try {
+      setMessages(await listMessages());
+    } finally {
+      setLoadingList(false);
+    }
   }
 
   async function unlock() {
@@ -58,17 +64,18 @@ export default function VaultPage() {
       }
       const raw = await unlockVMK(passphrase, {
         wrapped_vmk_b64: mat.wrapped_vmk,
-        vmk_crypto_version: 1,
+        vmk_crypto_version: CRYPTO_VERSION,
         vmk_kdf_algorithm: "PBKDF2-SHA256",
         vmk_kdf_salt_b64: mat.vmk_kdf_salt,
         vmk_kdf_parameters: mat.vmk_kdf_parameters,
       });
       setVMK(raw);
-      setPassphrase("");
       await refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Unlock failed");
     } finally {
+      // Always drop the passphrase from memory-backed state, success or not.
+      setPassphrase("");
       setUnlocking(false);
     }
   }
@@ -108,7 +115,7 @@ export default function VaultPage() {
       if (!vmk) throw new Error("Unlock first");
       const m = await getMessage(id);
       const text = await decryptMessage(
-        { v: 1, algo: "AES-256-GCM", kdf: null, iv_b64: m.iv, wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
+        { v: m.crypto_version, algo: "AES-256-GCM", kdf: null, iv_b64: m.iv, wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
         vmk,
       );
       setOpened({ label: m.label, text });
@@ -257,7 +264,12 @@ export default function VaultPage() {
 
       {err && <p role="alert" className="mb-4 text-sm text-danger">{err}</p>}
 
-      {filtered.length === 0 ? (
+      {loadingList ? (
+        <div className="card flex items-center gap-2 text-sm text-muted" aria-busy="true" aria-label="Loading messages">
+          <Spinner />
+          Loading messages…
+        </div>
+      ) : filtered.length === 0 ? (
         <EmptyState
           icon={<Mail className="h-8 w-8" />}
           title={messages.length === 0 ? "No messages yet" : "No matches"}
@@ -284,6 +296,7 @@ export default function VaultPage() {
               <button
                 type="button"
                 className="btn-ghost px-2 py-1 text-xs"
+                aria-label={`Delete ${m.label}`}
                 title="Delete"
                 onClick={() => onDelete(m.id)}
               >

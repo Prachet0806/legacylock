@@ -103,14 +103,20 @@ def check_in(current_user: User = Depends(require_owner), db: Session = Depends(
     cfg.last_check_in = now
     cfg.updated_at = now
     db.commit()
-    # Check-in cancels grace: reset to active
+    # Check-in cancels grace: CAS-reset to active (a concurrent auto-trigger
+    # that already committed wins; a stale one loses its version check).
     vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
-    if vs and vs.state != "triggered":
-        if vs.state != "active" or vs.grace_started_at is not None:
-            vs.state = "active"
-            vs.grace_started_at = None
-            vs.updated_at = now
-            db.commit()
+    if vs and vs.state != "triggered" and (vs.state != "active" or vs.grace_started_at is not None):
+        ver = vs.version or 1
+        db.query(VaultStatus).filter(
+            VaultStatus.id == vs.id,
+            VaultStatus.version == ver,
+            VaultStatus.state != "triggered",
+        ).update(
+            {"state": "active", "grace_started_at": None, "version": ver + 1, "updated_at": now},
+            synchronize_session="fetch",
+        )
+        db.commit()
     try:
         log_audit("heartbeat.checkin", "owner", current_user.id, vault.id)
     except Exception:

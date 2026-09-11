@@ -33,7 +33,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       {children}
       <div className="fixed right-4 top-4 z-[60] flex w-80 flex-col gap-2" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className="card flex items-start gap-2 !p-3 text-sm">
+          <div
+            key={t.id}
+            className="card flex items-start gap-2 !p-3 text-sm"
+            role={t.kind === "success" ? "status" : "alert"}
+          >
             {t.kind === "success" ? (
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
             ) : (

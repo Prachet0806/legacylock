@@ -8,6 +8,7 @@ import {
   getHeartbeat,
   getVaultStatus,
   manualTrigger,
+  nextDeadline,
   putHeartbeat,
   type HeartbeatConfig,
   type VaultStatus,
@@ -36,6 +37,7 @@ export default function HeartbeatPage() {
   const [confirm, setConfirm] = useState(false);
   const [showTrigger, setShowTrigger] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
   async function refresh() {
@@ -43,8 +45,9 @@ export default function HeartbeatPage() {
     setStatus(await getVaultStatus());
   }
   useEffect(() => {
-    refresh().catch((e) => setErr(e instanceof Error ? e.message : "Load failed"));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    refresh()
+      .catch((e) => setErr(e instanceof Error ? e.message : "Load failed"))
+      .finally(() => setLoading(false));
   }, []);
 
   async function onSave() {
@@ -83,8 +86,20 @@ export default function HeartbeatPage() {
     }
   }
 
-  const state = status?.status ?? "active";
-  const activeIdx = STATES.indexOf(state as (typeof STATES)[number]);
+  const state = status?.status ?? null;
+  const activeIdx = state ? STATES.indexOf(state as (typeof STATES)[number]) : -1;
+
+  if (loading) {
+    return (
+      <main className="mx-auto max-w-3xl px-4 py-8" aria-busy="true" aria-label="Loading heartbeat">
+        <h1 className="mb-6 text-2xl font-bold">Heartbeat</h1>
+        <div className="card animate-pulse">
+          <div className="h-6 w-1/3 rounded bg-raised" />
+          <div className="mt-3 h-4 w-2/3 rounded bg-raised" />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
@@ -101,7 +116,7 @@ export default function HeartbeatPage() {
                     "flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold",
                     i < activeIdx && "bg-success text-black",
                     i === activeIdx && s === "active" && "bg-success text-black",
-                    i === activeIdx && s === "grace" && "animate-pulse bg-warn text-black",
+                    i === activeIdx && s === "grace" && "motion-safe:animate-pulse bg-warn text-black",
                     i === activeIdx && s === "triggered" && "bg-danger text-white",
                     i > activeIdx && "bg-raised text-muted",
                   )}
@@ -138,7 +153,7 @@ export default function HeartbeatPage() {
             Status
           </h2>
           <StatusChip tone={state === "triggered" ? "danger" : state === "grace" ? "warn" : "success"} pulse={state === "grace"}>
-            {state.toUpperCase()}
+            {(state ?? "unknown").toUpperCase()}
           </StatusChip>
           <dl className="text-sm">
             <div className="flex justify-between py-1">
@@ -147,7 +162,7 @@ export default function HeartbeatPage() {
             </div>
             <div className="flex justify-between py-1">
               <dt className="text-muted">Next deadline</dt>
-              <dd>{countdown(cfg?.next_deadline ?? null)}</dd>
+              <dd>{countdown(nextDeadline(cfg))}</dd>
             </div>
           </dl>
           <button type="button" className="btn-primary mt-2 text-sm" onClick={onCheckin}>

@@ -43,10 +43,6 @@ export const createMessage = (body: {
   coverage_tags?: string[];
 }) =>
   apiFetch<{ id: number }>("/vault/messages", { method: "POST", body: JSON.stringify(body) });
-export const updateMessage = (
-  id: number,
-  body: Partial<{ label: string; ciphertext: string; wrapped_mek: string; iv: string }>,
-) => apiFetch<{ id: number }>(`/vault/messages/${id}`, { method: "PUT", body: JSON.stringify(body) });
 export const deleteMessage = (id: number) =>
   apiFetch<void>(`/vault/messages/${id}`, { method: "DELETE" });
 
@@ -104,29 +100,31 @@ export const inviteBeneficiary = (id: number) =>
   apiFetch<{ invitation_link: string; beneficiary_id: number }>(`/beneficiaries/${id}/invite`, {
     method: "POST",
   });
-export interface ShareAssignment {
-  beneficiary_id: number;
-  beneficiary_name: string;
-  beneficiary_email: string;
-  share_index: number | null;
-  invitation_status: string;
-}
-export const listShareAssignments = () =>
-  apiFetch<ShareAssignment[]>("/vault/share-assignments");
-
 // --- heartbeat ---
+// NOTE: the API has no next_deadline field; compute it client-side as
+// last_check_in + interval_days. PUT returns {message}, not the config.
 export interface HeartbeatConfig {
   interval_days: number;
   grace_days: number;
   last_check_in: string | null;
-  next_deadline?: string | null;
+  updated_at?: string;
 }
 export const getHeartbeat = () => apiFetch<HeartbeatConfig>("/heartbeat");
 export const putHeartbeat = (body: { interval_days: number; grace_days: number }) =>
-  apiFetch<HeartbeatConfig>("/heartbeat", { method: "PUT", body: JSON.stringify(body) });
-export const checkin = () => apiFetch<{ message: string }>("/heartbeat/checkin", { method: "POST" });
+  apiFetch<{ message: string }>("/heartbeat", { method: "PUT", body: JSON.stringify(body) });
+export const checkin = () => apiFetch<{ message: string; last_check_in?: string }>("/heartbeat/checkin", { method: "POST" });
+
+export function nextDeadline(cfg: HeartbeatConfig | null): string | null {
+  if (!cfg?.last_check_in) return null;
+  const ms = new Date(cfg.last_check_in).getTime() + cfg.interval_days * 86400000;
+  return new Date(ms).toISOString();
+}
 
 // --- beneficiary recovery ---
+// The HttpOnly beneficiary cookie (set on invite accept) is sent automatically
+// via credentials:include; the tab-scoped sessionStorage token below is a
+// fallback for contexts where the cookie is unavailable. The server accepts
+// either (header first, then cookie).
 function beneficiaryHeaders(): Record<string, string> {
   if (typeof sessionStorage === "undefined") return {};
   const t = sessionStorage.getItem("legacylock_beneficiary_token");
@@ -142,10 +140,10 @@ export const getAccessStatus = () =>
     { headers: beneficiaryHeaders() },
   );
 export const submitShare = (shareHash: string) =>
-  apiFetch<{ message: string; verified: boolean }>("/access/share", {
+  apiFetch<{ message: string; accepted: boolean; duplicate?: boolean }>("/access/share", {
     method: "POST",
     headers: beneficiaryHeaders(),
-    body: JSON.stringify({ share: shareHash }),
+    body: JSON.stringify({ share_hash: shareHash }),
   });
 export const reportMismatch = () =>
   apiFetch<{ message: string }>("/access/share/report-mismatch", {
@@ -188,8 +186,6 @@ export interface Stats {
   vault_status: string;
 }
 export const getStats = () => apiFetch<Stats>("/stats");
-export const getMessagesCount = async () => ({ count: (await listMessages()).length });
-export const getBeneficiariesCount = async () => ({ count: (await listBeneficiaries()).length });
 export const wipeVault = (password: string) =>
   apiFetch<void>("/vault/messages", {
     method: "DELETE",

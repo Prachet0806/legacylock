@@ -6,7 +6,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, FileText, Info, ShieldCheck, Ticket, Unlock } from "lucide-react";
 import { clsx } from "clsx";
-import { decryptMessage, zeroMemory } from "../../lib/crypto";
+import { decryptMessage, sha256Hex, zeroMemory } from "../../lib/crypto";
 import { reconstructVMK } from "../../lib/shamir";
 import {
   getAccessStatus,
@@ -58,10 +58,13 @@ export default function RecoveryPage() {
       const a = s1.trim();
       const b = s2.trim();
       if (!a || !b) throw new Error("Enter two shares.");
-      await submitShare(a).catch((e) => {
+      // Hash locally FIRST: raw shares never leave this tab. The server only
+      // records digests ("accepted" = recorded, not verified — only local
+      // reconstruction can verify shares).
+      await submitShare(await sha256Hex(a)).catch((e) => {
         throw new Error(e instanceof Error ? `Share A rejected: ${e.message}` : "Share A rejected");
       });
-      await submitShare(b).catch((e) => {
+      await submitShare(await sha256Hex(b)).catch((e) => {
         throw new Error(e instanceof Error ? `Share B rejected: ${e.message}` : "Share B rejected");
       });
       const raw = reconstructVMK([a, b]);
@@ -83,7 +86,7 @@ export default function RecoveryPage() {
       if (!vmk) throw new Error("Enter your shares first.");
       const m = await getRecoveryMessage(id);
       const text = await decryptMessage(
-        { v: 1, algo: "AES-256-GCM", kdf: null, iv_b64: m.iv, wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
+        { v: m.crypto_version, algo: "AES-256-GCM", kdf: null, iv_b64: m.iv, wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
         vmk,
       );
       setSelectedId(id);
@@ -104,9 +107,13 @@ export default function RecoveryPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
       <h1 className="text-2xl font-bold">Beneficiary recovery</h1>
-      <ol className="my-6 flex items-center gap-2 text-sm">
+      <ol className="my-6 flex items-center gap-2 text-sm" aria-label="Recovery progress">
         {["Access", "Shares", "Decrypt"].map((label, i) => (
-          <li key={label} className="flex items-center gap-2">
+          <li
+            key={label}
+            className="flex items-center gap-2"
+            aria-current={step === i + 1 ? "step" : undefined}
+          >
             <span
               className={clsx(
                 "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold",

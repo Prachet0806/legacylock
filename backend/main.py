@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
 from db import SessionLocal, init_db
 from logging_config import setup_logging
-from middleware import RateLimiterMiddleware, RequestIdMiddleware, SecurityHeadersMiddleware
+from middleware import OriginCheckMiddleware, RateLimiterMiddleware, RequestIdMiddleware, SecurityHeadersMiddleware
 from routers import access, auth, beneficiaries, health, heartbeat, stats, trigger, vault
 from services.heartbeat_checker import check_heartbeat
 
@@ -82,6 +82,9 @@ app.add_middleware(RequestIdMiddleware)
 
 # Rate limiting
 app.add_middleware(RateLimiterMiddleware, requests_per_minute=60, requests_per_hour=1000)
+
+# CSRF origin check for cookie-authed mutations (inside CORS so preflights pass first)
+app.add_middleware(OriginCheckMiddleware)
 
 # CORS outermost so preflights are handled before auth/rate-limit logic
 app.add_middleware(

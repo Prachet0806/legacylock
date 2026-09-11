@@ -5,6 +5,8 @@
 Thumbs.db
 .env
 .env.*
+!.env.example
+!frontend/.env.local.example
 *.log
 
 #######################################
@@ -14,6 +16,7 @@ node_modules/
 .next/
 out/
 dist/
+*.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -79,3 +82,8 @@ coverage.xml
 .coverage*
 *.egg-info/
 pip-wheel-metadata/
+
+#######################################
+# JWT signing keys (dev-only, never commit — CI generates throwaways)
+#######################################
+backend/keys/*.pem

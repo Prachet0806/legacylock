@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from config import get_settings
 from deps import get_current_beneficiary, get_db, require_beneficiary, require_owner
 from models import Beneficiary, User, Vault, VaultMessage, VaultStatus
+from services.audit import record_audit
 from services.auth import create_access_token, hash_token
 
 # Public router — no auth required (for invitation acceptance)
@@ -57,15 +58,11 @@ def _get_vault(db: Session, current_user: User | Beneficiary | None = None) -> V
 
 
 def _find_by_invite(db: Session, raw_token: str) -> Beneficiary | None:
-    """Look up beneficiary by invitation token. DB stores SHA-256 hash only.
-
-    Falls back to raw match for legacy rows created before hashing.
-    """
-    hashed = hash_token(raw_token)
-    b = db.query(Beneficiary).filter(Beneficiary.invitation_hash == hashed).first()
-    if b:
-        return b
-    return db.query(Beneficiary).filter(Beneficiary.invitation_hash == raw_token).first()
+    """Look up beneficiary by invitation token. The DB stores SHA-256 hashes
+    only — pre-hashing rows cannot exist and are treated as invalid."""
+    return db.query(Beneficiary).filter(
+        Beneficiary.invitation_hash == hash_token(raw_token)
+    ).first()
 
 
 def _queue_email(to: str, subject: str, body: str) -> None:
@@ -135,8 +132,9 @@ class ShareAssignmentOut(BaseModel):
 
 
 class ShareSubmit(BaseModel):
-    share: str | None = None
-    share_hash: str | None = None
+    # Raw shares are NEVER accepted: the browser hashes with SHA-256 first.
+    # Only the 64-char hex digest crosses the trust boundary.
+    share_hash: str
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +178,7 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
     # Create beneficiary-scoped access token (explicit role)
     vault = _get_vault(db, beneficiary)
     access_token = create_access_token(beneficiary.id, vault.id, role="beneficiary")
+    record_audit(db, vault.id, "beneficiary", beneficiary.id, "invite.accept", {})
 
     # Also set beneficiary HttpOnly cookie for browser flows
     try:
@@ -301,21 +300,21 @@ def submit_share(
     current_beneficiary: Beneficiary = Depends(require_beneficiary),
     db: Session = Depends(get_db),
 ):
-    """Submit a Shamir share hash for recovery.
+    """Submit a client-hashed Shamir share for recovery.
 
-    Backend stores only the SHA-256 hash (idempotent resubmit = no-op) and
-    never reconstructs the VMK. Vault must be TRIGGERED.
+    The backend only compares/stores the SHA-256 hex digest (idempotent
+    resubmit = no-op) and never sees raw share material, plaintext, or the
+    VMK. "Accepted" means recorded — only the browser can verify that shares
+    reconstruct the VMK. Vault must be TRIGGERED.
     """
     from services.share_service import submit_share as _submit
 
     vault = _get_vault(db, current_beneficiary)
-    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
-    if not vs or vs.state != "triggered":
-        raise HTTPException(status_code=403, detail="Vault not triggered")
-    raw = data.share if data.share is not None else data.share_hash
-    if not raw:
-        raise HTTPException(status_code=400, detail="share is required")
-    return _submit(db, vault.id, current_beneficiary.id, raw)
+    _require_triggered(db, vault.id)
+    result = _submit(db, vault.id, current_beneficiary.id, data.share_hash)
+    record_audit(db, vault.id, "beneficiary", current_beneficiary.id, "share.submit",
+                 {"duplicate": result.get("duplicate", False)})
+    return result
 
 
 class RecoveryMessageMeta(BaseModel):

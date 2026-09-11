@@ -124,12 +124,22 @@ def reset_status(data: ResetStatusRequest, current_user: User = Depends(require_
     vault = _get_vault(db, current_user)
     vs = _get_or_create_vault_status(db, vault.id)
     now = datetime.now(UTC)
-    vs.state = "active"
-    vs.grace_started_at = None
-    vs.triggered_at = None
-    vs.trigger_reason = None
-    vs.version = (vs.version or 1) + 1
-    vs.updated_at = now
+    ver = vs.version or 1
+    # CAS: a concurrent trigger that committed first wins (row no longer matches).
+    db.query(VaultStatus).filter(
+        VaultStatus.id == vs.id,
+        VaultStatus.version == ver,
+    ).update(
+        {
+            "state": "active",
+            "grace_started_at": None,
+            "triggered_at": None,
+            "trigger_reason": None,
+            "version": ver + 1,
+            "updated_at": now,
+        },
+        synchronize_session="fetch",
+    )
     db.commit()
     record_audit(db, vault.id, "owner", current_user.id, "vault.reset", {})
     return {"message": "Vault status reset to active."}

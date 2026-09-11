@@ -10,7 +10,7 @@ import {
   listBeneficiaries,
   type Beneficiary,
 } from "../../lib/client";
-import { CopyButton, EmptyState, Modal, StatusChip } from "../../components/ui";
+import { CopyButton, EmptyState, Modal, Spinner, StatusChip } from "../../components/ui";
 import { useToast } from "../../components/toast";
 
 function statusTone(s: string): "success" | "warn" | "neutral" {
@@ -58,9 +58,14 @@ export default function BeneficiariesPage() {
   const [err, setErr] = useState("");
   const [link, setLink] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<Beneficiary | null>(null);
+  const [loading, setLoading] = useState(true);
 
   async function refresh() {
-    setRows(await listBeneficiaries());
+    try {
+      setRows(await listBeneficiaries());
+    } finally {
+      setLoading(false);
+    }
   }
   useEffect(() => {
     refresh().catch((e) => setErr(e instanceof Error ? e.message : "Load failed"));
@@ -128,16 +133,27 @@ export default function BeneficiariesPage() {
           Add beneficiary
         </h2>
         <div className="flex flex-col gap-2 sm:flex-row">
-          <input className="input" placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} aria-label="Name" />
-          <input className="input" placeholder="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} aria-label="Email" />
-          <button type="button" className="btn-primary shrink-0" onClick={onAdd}>
+          <div className="flex-1">
+            <label className="label" htmlFor="ben-name">Name</label>
+            <input id="ben-name" className="input" placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="flex-1">
+            <label className="label" htmlFor="ben-email">Email</label>
+            <input id="ben-email" className="input" placeholder="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </div>
+          <button type="button" className="btn-primary shrink-0 self-end" onClick={onAdd}>
             Add
           </button>
         </div>
         {err && <p role="alert" className="mt-2 text-sm text-danger">{err}</p>}
       </div>
 
-      {rows.length === 0 ? (
+      {loading ? (
+        <div className="card flex items-center gap-2 text-sm text-muted" aria-busy="true" aria-label="Loading beneficiaries">
+          <Spinner />
+          Loading beneficiaries…
+        </div>
+      ) : rows.length === 0 ? (
         <EmptyState
           icon={<Users className="h-8 w-8" />}
           title="No beneficiaries yet"
@@ -167,6 +183,7 @@ export default function BeneficiariesPage() {
               <button
                 type="button"
                 className="btn-ghost px-2 py-1 text-xs"
+                aria-label={`Remove ${b.name}`}
                 title="Remove"
                 onClick={() => setConfirmRemove(b)}
               >

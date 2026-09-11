@@ -1,4 +1,4 @@
-# LegacyLock — Zero-Knowledge Digital Legacy Vault
+﻿# LegacyLock — Zero-Knowledge Digital Legacy Vault
 
 LegacyLock is a **security-first web application** that allows users to securely store sensitive messages and ensure they are released only under predefined conditions (e.g., prolonged inactivity). The system is designed around **zero-knowledge principles** — the server and database can never read user data.
 
@@ -17,8 +17,11 @@ LegacyLock is a **security-first web application** that allows users to securely
 - **Beneficiary recovery flow** — Invitation accept → short-lived session → share-hash
   submission (idempotent, rate-limited) → ciphertext fetch after TRIGGERED → local
   reconstruct + decrypt. The backend never reconstructs the VMK.
-- **Heartbeat dead-man switch** — Configurable check-in interval and grace period to auto-trigger vault release.
-- **Escalating notifications** — Grace period warnings (Day 0, Day 3, Day N-1) sent to beneficiaries.
+- **Heartbeat dead-man switch** — Configurable check-in interval and grace period
+  (`grace_days` must not exceed `interval_days`) to auto-trigger vault release.
+- **Escalating notifications** — Grace period warnings (Day 0, Day 3 if grace > 3 days,
+  final 24h with SMS when a phone is on file) sent to beneficiaries. Notifications
+  are mock-logged in development; SendGrid/Twilio keys enable real delivery.
 - **Owner authentication (Argon2id + RS256 JWT)** — Secure login with rotating refresh tokens in HttpOnly cookies.
 - **PostgreSQL database** — Production-ready persistent storage.
 
@@ -64,6 +67,7 @@ legacylock/
 │   │   ├── layout.tsx         # Root layout + theme + providers + AppShell
 │   │   ├── page.tsx           # Login (default route)
 │   │   ├── home/page.tsx      # Dashboard/landing
+│   │   ├── login/page.tsx     # Retired URL → redirects to /
 │   │   ├── vault/
 │   │   │   ├── page.tsx       # Vault (unlock, encrypt/decrypt messages)
 │   │   │   └── setup/page.tsx # Vault setup wizard (passphrase + share ceremony)
@@ -80,7 +84,8 @@ legacylock/
 │   │   ├── crypto.ts          # WebCrypto: PBKDF2, AES-GCM, AES-KW
 │   │   ├── shamir.ts          # Shamir GF(256) 2-of-3 (client only)
 │   │   └── store/vault-context.tsx  # In-memory VMK session
-│   ├── tests/                 # Playwright (crypto unit + page/redirect specs)
+│   ├── tests/                 # Playwright: crypto unit (9), pages/redirects (11),
+│   │                           # health (1), golden owner→trigger→recovery E2E (1)
 │   ├── .env.local
 │   └── package.json
 │
@@ -109,7 +114,7 @@ legacylock/
 │   │   ├── heartbeat_checker.py  # Background heartbeat evaluation
 │   │   └── notifications.py   # Mock by default (SendGrid/Twilio optional)
 │   ├── alembic/               # Database migrations
-│   ├── tests/                 # Pytest suite (95 tests passing)
+│   ├── tests/                 # Pytest suite (105 tests passing)
 │   ├── requirements.txt
 │   └── pyproject.toml
 │
@@ -126,7 +131,7 @@ legacylock/
 | Symmetric Algorithm | AES-256-GCM |
 | Key Derivation (Vault) | PBKDF2-SHA256 (600,000 iterations) |
 | Key Derivation (Login) | Argon2id |
-| Salt (per message) | Random 16 bytes |
+| Salt (vault KDF) | Random 16 bytes per vault |
 | IV (per message) | Random 12 bytes |
 | VMK Wrapping | AES-KW |
 | Key Splitting | Shamir GF(256) 2-of-3 |
@@ -208,7 +213,10 @@ legacylock/
 |-------|--------|---------|
 | `/stats` | GET | Dashboard statistics |
 
-All routes require valid JWT in Authorization header or HttpOnly cookie.
+All routes require valid JWT in Authorization header or HttpOnly cookie, except
+`GET /health[/z]`, `GET /readyz`, and the public invitation endpoints
+(`GET /access/invite/{hash}/status`, `POST /access/invite/{hash}/accept`).
+Owner vs beneficiary roles are enforced separately on every other route.
 
 ---
 
@@ -296,7 +304,7 @@ To stop: `Ctrl+C` the two servers, then `docker compose stop postgres`
 
 ### Run Tests
 ```bash
-# Backend (92 tests; uses throwaway SQLite, no Postgres needed)
+# Backend (105 tests; uses throwaway SQLite, no Postgres needed)
 cd backend
 venv\Scripts\python -m pytest tests/ -v
 
@@ -350,7 +358,7 @@ npx playwright test            # needs `npx playwright install chromium` once + 
 **Infrastructure**
 - PostgreSQL with auto-created dev schema (+ Alembic migrations)
 - Docker Compose for local dev
-- 95 backend tests passing
+- 105 backend tests passing
 - Frontend TypeScript build passing
 - E2E tests (Playwright: crypto unit + page/redirect specs)
 

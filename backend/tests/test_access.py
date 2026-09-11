@@ -56,19 +56,27 @@ class TestInviteFlow:
 class TestShareSubmit:
     def test_submit_idempotent_and_gated(self, client, auth):
         import base64
+        import hashlib
         raw = _invite_link(client, auth)
         token = client.post(f"/access/invite/{raw}/accept").json()["access_token"]
         bh = {"Authorization": f"Bearer {token}"}
         share = base64.b64encode(b"s" * 48).decode()
+        digest = hashlib.sha256(share.encode()).hexdigest()
         # gated before trigger
-        assert client.post("/access/share", json={"share": share}, headers=bh).status_code == 403
+        assert client.post("/access/share", json={"share_hash": digest}, headers=bh).status_code == 403
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
-            r1 = client.post("/access/share", json={"share": share}, headers=bh)
+            r1 = client.post("/access/share", json={"share_hash": digest}, headers=bh)
             assert r1.status_code == 200
-            r2 = client.post("/access/share", json={"share": share}, headers=bh)
+            assert r1.json() == {"message": "Share recorded", "accepted": True, "duplicate": False}
+            r2 = client.post("/access/share", json={"share_hash": digest}, headers=bh)
             assert r2.status_code == 200
             assert r2.json().get("duplicate") is True
+            assert r2.json().get("accepted") is True
+            assert "verified" not in r2.json()
+            # raw shares are rejected outright
+            assert client.post("/access/share", json={"share": share}, headers=bh).status_code == 422
+            assert client.post("/access/share", json={"share_hash": "not-hex"}, headers=bh).status_code == 400
         finally:
             client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
 
@@ -125,10 +133,12 @@ class TestRecoveryMessages:
         try:
             for _ in range(5):
                 assert client.post("/access/share/report-mismatch", headers=bh).status_code == 200
-            # locked: next submit of a *new* share is rejected
+            # locked: next submit of a *new* share hash is rejected
             import base64
+            import hashlib
             new_share = base64.b64encode(b"n" * 48).decode()
-            assert client.post("/access/share", json={"share": new_share}, headers=bh).status_code == 429
+            new_digest = hashlib.sha256(new_share.encode()).hexdigest()
+            assert client.post("/access/share", json={"share_hash": new_digest}, headers=bh).status_code == 429
         finally:
             client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
 

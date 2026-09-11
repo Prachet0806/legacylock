@@ -59,10 +59,15 @@ POST /heartbeat/checkin
 ```text
 POST /access/session
 GET  /access/status
-POST /access/share
-GET  /vault/share-assignments
-POST /vault/shares
+POST /access/share                # {share_hash} only — raw shares are rejected
+POST /access/share/report-mismatch
+GET  /access/messages             # TRIGGERED-gated metadata list
+GET  /access/messages/{id}        # TRIGGERED-gated ciphertext + wrapped MEK
+GET  /vault/share-assignments     # metadata only (alias of /access/share-assignments)
 ```
+
+`POST /vault/shares` was removed: shares are generated client-side, the server
+only records share-index assignments (`POST /beneficiaries/{id}/assign-share`).
 
 The API never reconstructs the VMK.
 
@@ -166,7 +171,10 @@ The API must never accept a request field representing the vault passphrase, KEK
 
 ## Coverage API
 
-### GET /vault/coverage
+> Deferred: only `category`/`coverage_tags` plumbing exists on messages.
+> There is no scoring engine and no `GET /vault/coverage` endpoint yet.
+
+### GET /vault/coverage (planned)
 
 **Authorization:** Owner session only.
 

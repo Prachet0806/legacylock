@@ -26,11 +26,19 @@ services:
     build: ./backend
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      DATABASE_URL: postgresql+psycopg://legacylock:legacylock@postgres:5432/legacylock_dev
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-legacylock}:${POSTGRES_PASSWORD:-legacylock}@postgres:5432/${POSTGRES_DB:-legacylock_dev}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set (>=32 chars)}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      HEARTBEAT_ENABLED: ${HEARTBEAT_ENABLED:-true}
       HEARTBEAT_CHECK_INTERVAL: ${HEARTBEAT_CHECK_INTERVAL:-3600}
+      JWT_PRIVATE_KEY_PATH: ${JWT_PRIVATE_KEY_PATH:-keys/jwt_private.pem}
+      JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH:-keys/jwt_public.pem}
+    volumes:
+      # JWT signing keys live outside the image (gitignored). Generate with:
+      # openssl genrsa -out backend/keys/jwt_private.pem 2048 && openssl rsa -in backend/keys/jwt_private.pem -pubout -out backend/keys/jwt_public.pem
+      - ./backend/keys:/app/keys:ro
     ports:
       - "8000:8000"
     depends_on:

@@ -66,9 +66,12 @@ Ciphertext
 
 ## KDF
 
-The MVP may use PBKDF2-SHA256 with a fixed, documented iteration count.
+The MVP uses PBKDF2-SHA256 at 600,000 iterations for new vaults. The count is
+stored per-vault in `vmk_kdf_parameters`, so older vaults keep unlocking with
+their own documented count; clients must honor the stored parameters.
 
-The exact count must be recorded in the implementation and crypto test vectors.
+The exact count is recorded per-vault in `vmk_kdf_parameters` and covered by
+client round-trip tests (`frontend/tests/crypto.spec.ts`).
 
 Long-term direction: Argon2id.
 

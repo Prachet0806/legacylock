@@ -52,6 +52,37 @@ def _require_b64(value: str, field: str, max_raw: int) -> None:
         raise HTTPException(status_code=422, detail=f"{field} size invalid")
 
 
+def _check_metadata(obj: object, field: str, max_keys: int = 20, max_serialized: int = 4000) -> None:
+    """Bound free-form crypto metadata dicts (count, key length, depth, size)."""
+    if obj is None:
+        return
+    if not isinstance(obj, dict) or len(obj) > max_keys:
+        raise HTTPException(status_code=422, detail=f"{field} must be an object with <= {max_keys} keys")
+    for k in obj:
+        if not isinstance(k, str) or len(k) > 64:
+            raise HTTPException(status_code=422, detail=f"{field} keys must be strings <= 64 chars")
+
+    def _depth(v: object, d: int) -> int:
+        if d > 3:
+            raise HTTPException(status_code=422, detail=f"{field} nesting too deep")
+        if isinstance(v, dict):
+            return max([_depth(x, d + 1) for x in v.values()] or [d])
+        if isinstance(v, list):
+            if len(v) > 50:
+                raise HTTPException(status_code=422, detail=f"{field} lists too long")
+            for x in v:
+                _depth(x, d + 1)
+        return d
+
+    _depth(obj, 0)
+    try:
+        serialized = json.dumps(obj)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"{field} must be JSON-serializable") from exc
+    if len(serialized) > max_serialized:
+        raise HTTPException(status_code=422, detail=f"{field} too large")
+
+
 class MessageMeta(BaseModel):
     id: int
     label: str
@@ -141,6 +172,7 @@ def save_message(
         _require_b64(data.iv, "iv", 64)
 
     metadata_dict = dict(data.crypto_metadata) if data.crypto_metadata else {}
+    _check_metadata(data.crypto_metadata, "crypto_metadata")
 
     if data.iv and "iv" not in metadata_dict:
         metadata_dict["iv"] = data.iv
@@ -314,6 +346,7 @@ def update_message(
         _require_b64(data.iv, "iv", 64)
 
     if data.crypto_metadata is not None:
+        _check_metadata(data.crypto_metadata, "crypto_metadata")
         merged = dict(data.crypto_metadata)
         if data.iv and "iv" not in merged:
             merged["iv"] = data.iv
@@ -399,6 +432,7 @@ def save_crypto_material(
 
     _require_b64(data.wrapped_vmk, "wrapped_vmk", 100_000)
     _require_b64(data.vmk_kdf_salt, "vmk_kdf_salt", 10_000)
+    _check_metadata(data.vmk_kdf_parameters, "vmk_kdf_parameters", max_keys=10, max_serialized=2000)
     iters = data.vmk_kdf_parameters.get("iterations")
     if not isinstance(iters, int) or iters < 100_000 or iters > 10_000_000:
         raise HTTPException(status_code=422, detail="iterations must be >= 100000")

@@ -105,7 +105,14 @@ def create_refresh_token(user_id: int, vault_id: int, db: Session) -> tuple[str,
 
 
 def rotate_refresh_token(refresh_token: RefreshToken, db: Session) -> str:
-    """Rotate a refresh token: revoke old, create new in same family, and return raw token."""
+    """Rotate a refresh token: revoke old, create new in same family, and return raw token.
+
+    Re-checks the revoked flag under the caller's row lock: if another worker
+    rotated first, raises RefreshReuseError instead of minting a sibling.
+    """
+    db.refresh(refresh_token)
+    if refresh_token.revoked_at is not None:
+        raise RefreshReuseError(refresh_token.family_id)
     # Revoke current token
     refresh_token.revoked_at = datetime.now(UTC)
 
@@ -140,11 +147,20 @@ def verify_refresh_token(token: str, db: Session) -> RefreshToken | None:
 
     Raises RefreshReuseError if a revoked-but-replaced token is presented
     (possible theft) so callers can revoke the whole family.
+
+    The row is locked (SELECT ... FOR UPDATE, no-op on SQLite) and the lock
+    is held by the caller's session until rotate_refresh_token() commits, so
+    concurrent refreshes with the same token serialize instead of double-use.
+    Callers must use the SAME session for verify + rotate without committing
+    in between.
     """
     token_h = hash_token(token)
-    candidate = db.query(RefreshToken).filter(
-        RefreshToken.token_hash == token_h,
-    ).first()
+    candidate = (
+        db.query(RefreshToken)
+        .filter(RefreshToken.token_hash == token_h)
+        .with_for_update()
+        .first()
+    )
 
     if candidate is None:
         # Legacy fallback: in case older refresh tokens were hashed with argon2

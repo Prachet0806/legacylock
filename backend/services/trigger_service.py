@@ -10,6 +10,7 @@ cannot duplicate a transition.
 
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models import VaultStatus
@@ -20,7 +21,15 @@ def _get_or_create(db: Session, vault_id: int) -> VaultStatus:
     if not vs:
         vs = VaultStatus(vault_id=vault_id, state="active")
         db.add(vs)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # Concurrent first-touch creation won the race; use their row.
+            db.rollback()
+            vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault_id).first()
+            if not vs:
+                raise
+            return vs
         db.refresh(vs)
     return vs
 

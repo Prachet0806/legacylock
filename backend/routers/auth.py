@@ -1,15 +1,13 @@
 """Authentication routes — login, logout, token refresh, current user."""
 
-from datetime import UTC, datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
 from config import get_settings
 from deps import get_db, require_owner
-from models import RefreshToken, User, Vault
+from models import User, Vault
+from services.audit import record_audit
 from services.auth import (
     RefreshReuseError,
     create_access_token,
@@ -21,9 +19,11 @@ from services.auth import (
     verify_refresh_token,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+# Argon2id hash of a dummy secret. Verified (and discarded) on unknown-email
+# logins so existent vs non-existent accounts take the same time.
+_DUMMY_HASH = "$argon2id$v=19$m=65536,t=3,p=4$lVyi01Da0+4qcgurGVRIjQ$aDX//0PsB+UKqM5W/ZRGk1tB5lldLeBGf0OHvtdw2dI"
 
-security = HTTPBearer(auto_error=False)
+router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
@@ -81,65 +81,22 @@ def clear_auth_cookies(response: Response, secure: bool = False) -> None:
     response.delete_cookie("legacylock_owner_refresh", path="/auth", secure=secure, httponly=True, samesite="lax")
 
 
-def get_current_user_id(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-) -> int:
-    """Extract user ID from owner access token."""
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-    from services.auth import decode_access_token
-    try:
-        payload = decode_access_token(credentials.credentials)
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server misconfigured",
-        ) from exc
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-    if payload.get("role") != "owner":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
-    try:
-        return int(payload["sub"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        ) from exc
-
-
-def get_current_user(
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(lambda: next(get_db())),
-) -> User:
-    """Get current authenticated user."""
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
-    return user
-
-
 @router.post("/login", response_model=LoginResponse)
 def login(
     data: LoginRequest,
     response: Response,
-    db: Session = Depends(lambda: next(get_db())),
+    db: Session = Depends(get_db),
 ) -> LoginResponse:
     """Authenticate user. Refresh token is cookie-only (never in JSON)."""
     user = db.query(User).filter(User.email == data.email).first()
-    if not user or not verify_password(data.password, user.password_hash):
+    if user is None:
+        # Constant-time: burn the same Argon2id cost as a real check.
+        verify_password(data.password, _DUMMY_HASH)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+    if not verify_password(data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -158,6 +115,7 @@ def login(
 
     secure = _is_production()
     set_auth_cookies(response, access_token, refresh_token, secure)
+    record_audit(db, vault.id, "owner", user.id, "auth.login", {})
 
     return LoginResponse(
         access_token=access_token,
@@ -168,13 +126,16 @@ def login(
 def logout(
     request: Request,
     response: Response,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    """Logout: revoke refresh family from cookie or Bearer, clear cookies."""
+    """Logout: revoke the refresh family in the HttpOnly cookie, clear cookies.
+
+    Mass-revoke requires possession of the refresh cookie itself: a stolen
+    short-lived access token alone must not be able to nuke all sessions.
+    """
     secure = _is_production()
     revoked = False
-    # Prefer cookie refresh token (Option A canonical path)
+    # Canonical path: refresh token from HttpOnly cookie (Option A)
     raw_refresh = request.cookies.get("legacylock_owner_refresh")
     if raw_refresh:
         try:
@@ -189,27 +150,9 @@ def logout(
             try:
                 revoke_refresh_token_family(rt.family_id, db)
                 revoked = True
+                record_audit(db, rt.vault_id, "owner", rt.user_id, "auth.logout", {})
             except Exception:
                 pass
-    # Fallback: revoke all active tokens for Bearer identity (legacy clients)
-    if not revoked and credentials:
-        try:
-            payload = decode_access_token(credentials.credentials)
-        except RuntimeError:
-            payload = None
-        if payload and payload.get("role") == "owner":
-            try:
-                user_id = int(payload.get("sub", 0))
-            except (TypeError, ValueError):
-                user_id = 0
-            if user_id:
-                refresh_tokens = db.query(RefreshToken).filter(
-                    RefreshToken.user_id == user_id,
-                    RefreshToken.revoked_at.is_(None),
-                ).all()
-                for rt in refresh_tokens:
-                    rt.revoked_at = datetime.now(UTC)
-                db.commit()
 
     clear_auth_cookies(response, secure)
     return {"message": "Logged out successfully"}

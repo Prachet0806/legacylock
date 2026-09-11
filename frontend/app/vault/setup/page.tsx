@@ -15,7 +15,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { createWrappedVmk } from "../../../lib/crypto";
+import { CRYPTO_VERSION, createWrappedVmk } from "../../../lib/crypto";
 import { splitVMK } from "../../../lib/shamir";
 import { putCryptoMaterial } from "../../../lib/client";
 import { useVault } from "../../../lib/store/vault-context";
@@ -56,13 +56,17 @@ export default function VaultSetupPage() {
       const { vmk, material } = await createWrappedVmk(passphrase);
       await putCryptoMaterial({
         wrapped_vmk: material.wrapped_vmk_b64,
-        vmk_crypto_version: 1,
+        vmk_crypto_version: CRYPTO_VERSION,
         vmk_kdf_algorithm: "PBKDF2-SHA256",
         vmk_kdf_salt: material.vmk_kdf_salt_b64,
         vmk_kdf_parameters: material.vmk_kdf_parameters,
       });
       setShares(splitVMK(vmk));
       setVMK(vmk);
+      // The passphrase has served its purpose (KEK derived + VMK wrapped);
+      // drop both copies so a failure below doesn't leave them in state.
+      setPassphrase("");
+      setConfirm("");
       setStep(3);
       notify("success", "Vault created. Store your shares now.");
     } catch (e) {
@@ -89,9 +93,13 @@ export default function VaultSetupPage() {
       <h1 className="text-2xl font-bold">Vault setup</h1>
 
       {/* Stepper */}
-      <ol className="my-6 flex items-center gap-2 text-sm">
+      <ol className="my-6 flex items-center gap-2 text-sm" aria-label="Setup progress">
         {["Passphrase", "Generate", "Shares"].map((label, i) => (
-          <li key={label} className="flex items-center gap-2">
+          <li
+            key={label}
+            className="flex items-center gap-2"
+            aria-current={step === i + 1 ? "step" : undefined}
+          >
             <span
               className={clsx(
                 "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold",
@@ -128,7 +136,7 @@ export default function VaultSetupPage() {
                 <div className="h-1.5 rounded bg-raised">
                   <div className={clsx("h-1.5 rounded bg-accent transition-all", s.width)} />
                 </div>
-                <p className="mt-1 text-xs text-muted">{s.label}</p>
+                <p className="mt-1 text-xs text-muted" aria-live="polite">{s.label}</p>
               </div>
             )}
           </div>
@@ -195,7 +203,7 @@ export default function VaultSetupPage() {
                 <span className="text-sm font-semibold">Share {i + 1} of 3</span>
                 <CopyButton text={share} />
               </div>
-              <code className="break-all rounded-md bg-raised p-3 font-mono text-xs">{share}</code>
+              <code data-testid={`share-${i + 1}`} className="break-all rounded-md bg-raised p-3 font-mono text-xs">{share}</code>
               <label className="flex cursor-pointer items-center gap-2 text-sm text-muted">
                 <input
                   type="checkbox"

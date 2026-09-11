@@ -1,5 +1,5 @@
 // LegacyLock client crypto engine (C3) — WebCrypto only.
-// MVP: PBKDF2-SHA256 (100k) -> KEK (AES-KW) -> wrap VMK; VMK (AES-KW) -> wrap MEK; MEK -> AES-GCM.
+// MVP: PBKDF2-SHA256 (600k) -> KEK (AES-KW) -> wrap VMK; VMK (AES-KW) -> wrap MEK; MEK -> AES-GCM.
 // Secrets never leave the browser; backend only sees wrapped blobs + non-secret metadata.
 
 export const CRYPTO_VERSION = 1;
@@ -56,6 +56,13 @@ export function randomBytes(n: number): Uint8Array {
 /** Best-effort memory wipe for in-memory secrets. */
 export function zeroMemory(buf: Uint8Array | null | undefined): void {
   if (buf) buf.fill(0);
+}
+
+/** SHA-256 hex digest. Used to hash Shamir shares BEFORE transmission so raw
+ *  share material never crosses the trust boundary (server stores the digest). */
+export async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // --- KEK derivation (vault passphrase -> AES-KW key, local only) ---

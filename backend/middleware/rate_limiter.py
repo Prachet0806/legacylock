@@ -1,5 +1,11 @@
-"""Rate limiting middleware (in-process, per-route buckets)."""
+"""Rate limiting middleware (in-process, per-route buckets).
 
+Single-process scope: each uvicorn worker keeps its own buckets, so limits
+multiply by worker count. Sufficient for the MVP single-worker deployment;
+a shared store (Redis) is required before scaling horizontally.
+"""
+
+import os
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -10,11 +16,17 @@ from starlette.responses import JSONResponse, Response
 
 from config import get_settings
 
-# Stricter buckets for sensitive routes: (per-minute, per-hour)
+# Stricter buckets for sensitive routes: (per-minute, per-hour).
+# NOTE: matching is prefix-based but each entry below names a FULL route
+# prefix deliberately — do not collapse these to "/auth" or "/access",
+# which would merge unrelated buckets.
 _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
     "/auth/login": (5, 60),
     "/auth/refresh": (10, 120),
     "/access/invite": (10, 100),
+    "/access/session": (10, 100),
+    "/access/share": (20, 100),
+    "/beneficiaries": (20, 200),
     "/vault/trigger": (5, 30),
     "/vault/reset-status": (5, 30),
 }
@@ -43,11 +55,18 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
             return forwarded.split(",")[0].strip()
         return client_host
 
-    def _limits_for(self, path: str) -> tuple[int, int]:
+    def _limits_for(self, path: str) -> tuple[tuple[int, int], str]:
+        """Return (limits, bucket_key_prefix) for a path.
+
+        The bucket key uses the matched route prefix (not just the first path
+        segment), so e.g. /access/session and /access/share — which share the
+        "access" segment but have different limits — get independent buckets.
+        """
         for prefix, limits in _ROUTE_LIMITS.items():
             if path.startswith(prefix):
-                return limits
-        return (self.requests_per_minute, self.requests_per_hour)
+                return limits, prefix
+        segment = path.split("/")[1] if len(path.split("/")) > 1 else ""
+        return (self.requests_per_minute, self.requests_per_hour), f"/{segment}"
 
     def _cleanup_old_entries(self, bucket: list[float], window_seconds: int) -> None:
         now = time.time()
@@ -65,21 +84,22 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        # Skip rate limiting for health checks and test environment
+        # Skip rate limiting for health checks, and in the test environment
+        # unless explicitly enabled (RATE_LIMIT_TESTING=1) for limiter tests.
         if request.url.path in ("/health", "/health/", "/healthz", "/ready", "/readyz"):
             return await call_next(request)
 
         # Skip rate limiting in test environment
         try:
             from config import get_settings
-            if get_settings().environment == "test":
+            if get_settings().environment == "test" and os.environ.get("RATE_LIMIT_TESTING") != "1":
                 return await call_next(request)
         except Exception:
             pass
 
         client_ip = self._get_client_ip(request)
-        per_min, per_hour = self._limits_for(request.url.path)
-        key_min = f"{client_ip}:{request.url.path.split('/')[1] if len(request.url.path.split('/')) > 1 else ''}"
+        (per_min, per_hour), bucket_prefix = self._limits_for(request.url.path)
+        key_min = f"{client_ip}:{bucket_prefix}"
         now = time.time()
 
         # Clean up old entries

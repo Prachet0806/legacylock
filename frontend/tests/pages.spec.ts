@@ -27,3 +27,14 @@ test("/login redirects to /", async ({ page }) => {
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("heading", { name: "Owner login" })).toBeVisible();
 });
+
+test("/recovery renders gate for token-carrying beneficiaries", async ({ page }) => {
+  // The intended auth-bypass exception: a tab-scoped invite token admits the
+  // recovery page itself (the backend still 403s every API call).
+  await page.addInitScript(() => {
+    sessionStorage.setItem("legacylock_beneficiary_token", "test-token");
+  });
+  await page.goto("/recovery");
+  await expect(page).toHaveURL(/\/recovery$/);
+  await expect(page.getByRole("heading", { name: "Beneficiary recovery" })).toBeVisible();
+});
