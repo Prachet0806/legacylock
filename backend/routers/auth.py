@@ -12,7 +12,6 @@ from services.auth import (
     RefreshReuseError,
     create_access_token,
     create_refresh_token,
-    decode_access_token,
     revoke_refresh_token_family,
     rotate_refresh_token,
     verify_password,
@@ -32,14 +31,14 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+    # Tokens travel via HttpOnly cookies only — never in JSON bodies.
+    message: str = "Logged in"
     expires_in: int = 900
 
 
 class RefreshResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+    # Tokens travel via HttpOnly cookies only — never in JSON bodies.
+    message: str = "Token refreshed"
     expires_in: int = 900
 
 
@@ -53,10 +52,13 @@ def _is_production() -> bool:
     return get_settings().environment == "production"
 
 
-def set_auth_cookies(response: Response, access_token: str, refresh_token: str, secure: bool = False) -> None:
+def set_auth_cookies(
+    response: Response, access_token: str, refresh_token: str, secure: bool = False
+) -> None:
     """Set HttpOnly cookies for access and refresh tokens (Option A: refresh cookie-only)."""
+    settings = get_settings()
     response.set_cookie(
-        key="legacylock_owner_session",
+        key=settings.session_cookie_name_owner,
         value=access_token,
         httponly=True,
         secure=secure,
@@ -65,7 +67,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str, 
         path="/",
     )
     response.set_cookie(
-        key="legacylock_owner_refresh",
+        key=settings.session_cookie_name_owner_refresh,
         value=refresh_token,
         httponly=True,
         secure=secure,
@@ -77,8 +79,17 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str, 
 
 def clear_auth_cookies(response: Response, secure: bool = False) -> None:
     """Clear auth cookies on logout (flags must match set_cookie)."""
-    response.delete_cookie("legacylock_owner_session", path="/", secure=secure, httponly=True, samesite="lax")
-    response.delete_cookie("legacylock_owner_refresh", path="/auth", secure=secure, httponly=True, samesite="lax")
+    settings = get_settings()
+    response.delete_cookie(
+        settings.session_cookie_name_owner, path="/", secure=secure, httponly=True, samesite="lax"
+    )
+    response.delete_cookie(
+        settings.session_cookie_name_owner_refresh,
+        path="/auth",
+        secure=secure,
+        httponly=True,
+        samesite="lax",
+    )
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -102,24 +113,19 @@ def login(
             detail="Invalid email or password",
         )
 
-    # Get or create vault for user
-    vault = db.query(Vault).filter(Vault.user_id == user.id).first()
-    if not vault:
-        vault = Vault(user_id=user.id, name="Primary Vault")
-        db.add(vault)
-        db.commit()
-        db.refresh(vault)
+    # Authentication has no domain side effects: vault provisioning happens
+    # explicitly at setup (PUT /vault/crypto-material), not here.
+    vault = db.query(Vault).filter(Vault.user_id == user.id, Vault.is_primary == True).first()
 
-    access_token = create_access_token(user.id, vault.id, role="owner")
-    refresh_token, _ = create_refresh_token(user.id, vault.id, db)
+    access_token = create_access_token(user.id, vault.id if vault else None, role="owner")
+    refresh_token, _ = create_refresh_token(user.id, vault.id if vault else None, db)
 
     secure = _is_production()
     set_auth_cookies(response, access_token, refresh_token, secure)
-    record_audit(db, vault.id, "owner", user.id, "auth.login", {})
+    record_audit(db, vault.id if vault else None, "owner", user.id, "auth.login", {})
+    db.commit()
 
-    return LoginResponse(
-        access_token=access_token,
-    )
+    return LoginResponse()
 
 
 @router.post("/logout")
@@ -136,7 +142,7 @@ def logout(
     secure = _is_production()
     revoked = False
     # Canonical path: refresh token from HttpOnly cookie (Option A)
-    raw_refresh = request.cookies.get("legacylock_owner_refresh")
+    raw_refresh = request.cookies.get(get_settings().session_cookie_name_owner_refresh)
     if raw_refresh:
         try:
             rt = verify_refresh_token(raw_refresh, db)
@@ -151,8 +157,9 @@ def logout(
                 revoke_refresh_token_family(rt.family_id, db)
                 revoked = True
                 record_audit(db, rt.vault_id, "owner", rt.user_id, "auth.logout", {})
+                db.commit()
             except Exception:
-                pass
+                db.rollback()
 
     clear_auth_cookies(response, secure)
     return {"message": "Logged out successfully"}
@@ -165,7 +172,7 @@ def refresh(
     db: Session = Depends(get_db),
 ) -> RefreshResponse:
     """Rotate refresh token from HttpOnly cookie and issue new access token."""
-    raw = request.cookies.get("legacylock_owner_refresh")
+    raw = request.cookies.get(get_settings().session_cookie_name_owner_refresh)
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -192,26 +199,15 @@ def refresh(
     # Rotate refresh token
     new_rt = rotate_refresh_token(rt, db)
 
-    # Resolve vault from token (not first-row guess)
-    vault = None
-    if getattr(rt, "vault_id", None):
-        vault = db.query(Vault).filter(Vault.id == rt.vault_id).first()
-    if not vault:
-        vault = db.query(Vault).filter(Vault.user_id == rt.user_id).first()
-    if not vault:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Vault not found",
-        )
+    # Resolve the primary vault (may be absent pre-setup — session stays valid)
+    vault = db.query(Vault).filter(Vault.user_id == rt.user_id, Vault.is_primary == True).first()
 
-    access_token = create_access_token(rt.user_id, vault.id, role="owner")
+    access_token = create_access_token(rt.user_id, vault.id if vault else None, role="owner")
 
     secure = _is_production()
     set_auth_cookies(response, access_token, new_rt, secure)
 
-    return RefreshResponse(
-        access_token=access_token,
-    )
+    return RefreshResponse()
 
 
 @router.get("/me", response_model=UserResponse)

@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
 
-// Golden-path E2E: owner encrypts -> beneficiary recovers after trigger.
+// Zero-knowledge golden path: owner encrypts -> beneficiary recovers after
+// trigger — AND the network boundary holds throughout: no request body may
+// carry the vault passphrase, raw shares, or message plaintext (the login
+// password travels only to its three auth endpoints, by design over TLS).
 // Requires a live backend (NEXT_PUBLIC_API_URL, default :8000) with a seeded
 // owner (E2E_OWNER_EMAIL/PASSWORD). Skips cleanly when unavailable, so plain
 // `npx playwright test` stays green without a backend.
@@ -30,14 +33,23 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   const BEN_EMAIL = `e2e-ben-${Date.now()}@example.com`;
 
   // Reset to ACTIVE first so reruns against a used DB still work.
-  const apiLogin = await request.post(`${API}/auth/login`, {
+  // Cookie flow: login sets HttpOnly cookies on the shared request context.
+  await request.post(`${API}/auth/login`, {
     data: { email: OWNER_EMAIL, password: OWNER_PASSWORD },
   });
-  const apiToken = (await apiLogin.json()).access_token;
   await request.post(`${API}/vault/reset-status`, {
-    headers: { Authorization: `Bearer ${apiToken}` },
     data: { password: OWNER_PASSWORD, confirm: true },
   });
+
+  // Capture every request body on both sessions for the boundary assertion.
+  const bodies: Array<{ url: string; body: string }> = [];
+  const tap = (p: typeof page) =>
+    p.on("request", (req) => {
+      if (["POST", "PUT", "PATCH"].includes(req.method())) {
+        bodies.push({ url: req.url(), body: req.postData() ?? "" });
+      }
+    });
+  tap(page);
 
   // --- Owner: login ---
   await page.goto("/");
@@ -103,13 +115,7 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   const benCtx = await context.browser()?.newContext();
   test.skip(!benCtx, "no browser for beneficiary context");
   const ben = await benCtx!.newPage();
-  // Security invariant: raw shares must never be POSTed — only hex digests.
-  const sharePosts: string[] = [];
-  await ben.route("**/access/share", async (route) => {
-    const req = route.request();
-    if (req.method() === "POST") sharePosts.push(req.postData() ?? "");
-    await route.continue();
-  });
+  tap(ben);
   await ben.goto(link);
   await ben.getByRole("button", { name: "Accept invitation" }).click();
   await expect(ben.getByText(/accepted/i).first()).toBeVisible();
@@ -125,11 +131,21 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   await expect(msgRow).toBeVisible({ timeout: 15000 });
   await msgRow.getByRole("button", { name: "Decrypt" }).click();
   await expect(ben.getByText(BODY)).toBeVisible({ timeout: 15000 });
-  expect(sharePosts.length).toBeGreaterThan(0);
-  for (const body of sharePosts) {
-    const parsed = JSON.parse(body) as Record<string, string>;
-    expect(Object.keys(parsed)).not.toContain("share");
-    expect(parsed.share_hash).toMatch(/^[0-9a-f]{64}$/);
+
+  // --- Boundary assertion: forbidden material in NO request body ---
+  const forbidden = [...shares, VAULT_PASSPHRASE, BODY];
+  const passwordEndpoints = ["/auth/login", "/vault/trigger", "/vault/reset-status"];
+  expect(bodies.length).toBeGreaterThan(0);
+  for (const { url, body } of bodies) {
+    for (const secret of forbidden) {
+      expect(body, `${url} leaked forbidden material`).not.toContain(secret);
+    }
+    if (body.includes(OWNER_PASSWORD)) {
+      expect(
+        passwordEndpoints.some((p) => url.includes(p)),
+        `${url} carried the login password outside auth endpoints`,
+      ).toBe(true);
+    }
   }
   await benCtx!.close();
 });

@@ -23,6 +23,7 @@ router = APIRouter(
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class BeneficiaryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     email: EmailStr = Field(..., max_length=320)
@@ -60,9 +61,12 @@ class InviteOut(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_vault(db: Session, current_user: User) -> Vault:
     """Get the vault for the current owner."""
-    vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
+    vault = (
+        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
+    )
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")
     return vault
@@ -106,15 +110,21 @@ Secure Digital Legacy""",
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @router.post("", status_code=status.HTTP_201_CREATED)
-def add_beneficiary(data: BeneficiaryCreate, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+def add_beneficiary(
+    data: BeneficiaryCreate,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
     vault = _get_vault(db, current_user)
 
     # Check if beneficiary already exists for this vault
-    existing = db.query(Beneficiary).filter(
-        Beneficiary.vault_id == vault.id,
-        Beneficiary.email == data.email
-    ).first()
+    existing = (
+        db.query(Beneficiary)
+        .filter(Beneficiary.vault_id == vault.id, Beneficiary.email == data.email)
+        .first()
+    )
     if existing:
         raise HTTPException(status_code=409, detail="Beneficiary with this email already exists")
 
@@ -126,10 +136,14 @@ def add_beneficiary(data: BeneficiaryCreate, current_user: User = Depends(requir
         share_index=data.share_index,
     )
     if data.share_index is not None:
-        clash = db.query(Beneficiary).filter(
-            Beneficiary.vault_id == vault.id,
-            Beneficiary.share_index == data.share_index,
-        ).first()
+        clash = (
+            db.query(Beneficiary)
+            .filter(
+                Beneficiary.vault_id == vault.id,
+                Beneficiary.share_index == data.share_index,
+            )
+            .first()
+        )
         if clash:
             raise HTTPException(status_code=409, detail="share_index already assigned")
     db.add(entry)
@@ -137,7 +151,9 @@ def add_beneficiary(data: BeneficiaryCreate, current_user: User = Depends(requir
         db.commit()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Beneficiary with this email already exists") from exc
+        raise HTTPException(
+            status_code=409, detail="Beneficiary with this email already exists"
+        ) from exc
     db.refresh(entry)
     try:
         log_audit("beneficiary.add", "owner", current_user.id, vault.id)
@@ -149,7 +165,12 @@ def add_beneficiary(data: BeneficiaryCreate, current_user: User = Depends(requir
 @router.get("", response_model=list[BeneficiaryOut])
 def list_beneficiaries(current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     vault = _get_vault(db, current_user)
-    rows = db.query(Beneficiary).filter(Beneficiary.vault_id == vault.id).order_by(Beneficiary.created_at.desc()).all()
+    rows = (
+        db.query(Beneficiary)
+        .filter(Beneficiary.vault_id == vault.id)
+        .order_by(Beneficiary.created_at.desc())
+        .all()
+    )
     return [
         BeneficiaryOut(
             id=r.id,
@@ -159,7 +180,9 @@ def list_beneficiaries(current_user: User = Depends(require_owner), db: Session 
             share_index=r.share_index,
             invitation_status=r.invitation_status,
             invitation_sent_at=r.invitation_sent_at.isoformat() if r.invitation_sent_at else None,
-            invitation_accepted_at=r.invitation_accepted_at.isoformat() if r.invitation_accepted_at else None,
+            invitation_accepted_at=r.invitation_accepted_at.isoformat()
+            if r.invitation_accepted_at
+            else None,
             created_at=r.created_at.isoformat() if r.created_at else "",
         )
         for r in rows
@@ -167,14 +190,17 @@ def list_beneficiaries(current_user: User = Depends(require_owner), db: Session 
 
 
 @router.post("/{beneficiary_id}/invite")
-async def invite_beneficiary(beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+async def invite_beneficiary(
+    beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)
+):
     """Send invitation email to beneficiary."""
     vault = _get_vault(db, current_user)
 
-    beneficiary = db.query(Beneficiary).filter(
-        Beneficiary.id == beneficiary_id,
-        Beneficiary.vault_id == vault.id
-    ).first()
+    beneficiary = (
+        db.query(Beneficiary)
+        .filter(Beneficiary.id == beneficiary_id, Beneficiary.vault_id == vault.id)
+        .first()
+    )
 
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
@@ -223,13 +249,19 @@ async def invite_beneficiary(beneficiary_id: int, current_user: User = Depends(r
 
 
 @router.put("/{beneficiary_id}")
-def update_beneficiary(beneficiary_id: int, data: BeneficiaryUpdate, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+def update_beneficiary(
+    beneficiary_id: int,
+    data: BeneficiaryUpdate,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
     vault = _get_vault(db, current_user)
 
-    beneficiary = db.query(Beneficiary).filter(
-        Beneficiary.id == beneficiary_id,
-        Beneficiary.vault_id == vault.id
-    ).first()
+    beneficiary = (
+        db.query(Beneficiary)
+        .filter(Beneficiary.id == beneficiary_id, Beneficiary.vault_id == vault.id)
+        .first()
+    )
 
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
@@ -241,17 +273,29 @@ def update_beneficiary(beneficiary_id: int, data: BeneficiaryUpdate, current_use
     if data.phone is not None:
         beneficiary.phone = data.phone
     if data.share_index is not None:
-        clash = db.query(Beneficiary).filter(
-            Beneficiary.vault_id == vault.id,
-            Beneficiary.share_index == data.share_index,
-            Beneficiary.id != beneficiary.id,
-        ).first()
+        clash = (
+            db.query(Beneficiary)
+            .filter(
+                Beneficiary.vault_id == vault.id,
+                Beneficiary.share_index == data.share_index,
+                Beneficiary.id != beneficiary.id,
+            )
+            .first()
+        )
         if clash:
             raise HTTPException(status_code=409, detail="share_index already assigned")
         beneficiary.share_index = data.share_index
 
     beneficiary.updated_at = datetime.now(UTC)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # Lost a concurrent uniqueness race (email/share_index); the DB
+        # constraint is authoritative, the pre-check above is for UX.
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="Beneficiary conflicts with an existing record"
+        ) from exc
     db.refresh(beneficiary)
     try:
         log_audit("beneficiary.update", "owner", current_user.id, vault.id)
@@ -274,22 +318,34 @@ def assign_share(
 ):
     """Assign a Shamir share index (metadata only, never raw share values)."""
     vault = _get_vault(db, current_user)
-    beneficiary = db.query(Beneficiary).filter(
-        Beneficiary.id == beneficiary_id,
-        Beneficiary.vault_id == vault.id,
-    ).first()
+    beneficiary = (
+        db.query(Beneficiary)
+        .filter(
+            Beneficiary.id == beneficiary_id,
+            Beneficiary.vault_id == vault.id,
+        )
+        .first()
+    )
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
-    clash = db.query(Beneficiary).filter(
-        Beneficiary.vault_id == vault.id,
-        Beneficiary.share_index == data.share_index,
-        Beneficiary.id != beneficiary.id,
-    ).first()
+    clash = (
+        db.query(Beneficiary)
+        .filter(
+            Beneficiary.vault_id == vault.id,
+            Beneficiary.share_index == data.share_index,
+            Beneficiary.id != beneficiary.id,
+        )
+        .first()
+    )
     if clash:
         raise HTTPException(status_code=409, detail="share_index already assigned")
     beneficiary.share_index = data.share_index
     beneficiary.updated_at = datetime.now(UTC)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="share_index already assigned") from exc
     try:
         log_audit("beneficiary.share_assign", "owner", current_user.id, vault.id)
     except Exception:
@@ -298,13 +354,16 @@ def assign_share(
 
 
 @router.delete("/{beneficiary_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_beneficiary(beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+def delete_beneficiary(
+    beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)
+):
     vault = _get_vault(db, current_user)
 
-    entry = db.query(Beneficiary).filter(
-        Beneficiary.id == beneficiary_id,
-        Beneficiary.vault_id == vault.id
-    ).first()
+    entry = (
+        db.query(Beneficiary)
+        .filter(Beneficiary.id == beneficiary_id, Beneficiary.vault_id == vault.id)
+        .first()
+    )
 
     if not entry:
         raise HTTPException(status_code=404, detail="Beneficiary not found")

@@ -20,9 +20,12 @@ router = APIRouter(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_vault(db: Session, current_user: User) -> Vault:
     """Get the vault for the current owner."""
-    vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
+    vault = (
+        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
+    )
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")
     return vault
@@ -50,6 +53,7 @@ def _get_or_create_heartbeat_config(db: Session, vault_id: int) -> HeartbeatConf
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class HeartbeatSettingsIn(BaseModel):
     interval_days: int = Field(..., ge=1, le=365)
     grace_days: int = Field(..., ge=1, le=90)
@@ -66,6 +70,7 @@ class HeartbeatOut(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @router.get("", response_model=HeartbeatOut)
 def get_heartbeat(current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     vault = _get_vault(db, current_user)
@@ -79,7 +84,11 @@ def get_heartbeat(current_user: User = Depends(require_owner), db: Session = Dep
 
 
 @router.put("")
-def save_heartbeat(data: HeartbeatSettingsIn, current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
+def save_heartbeat(
+    data: HeartbeatSettingsIn,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
     if data.grace_days > data.interval_days:
         raise HTTPException(status_code=422, detail="grace_days should not exceed interval_days")
     vault = _get_vault(db, current_user)
@@ -102,12 +111,13 @@ def check_in(current_user: User = Depends(require_owner), db: Session = Depends(
     now = datetime.now(UTC)
     cfg.last_check_in = now
     cfg.updated_at = now
-    db.commit()
-    # Check-in cancels grace: CAS-reset to active (a concurrent auto-trigger
-    # that already committed wins; a stale one loses its version check).
+    # Single transaction: check-in timestamp AND grace-cancel CAS-reset commit
+    # together, so a crash between them can't split the state.
     vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
     if vs and vs.state != "triggered" and (vs.state != "active" or vs.grace_started_at is not None):
         ver = vs.version or 1
+        # A concurrent auto-trigger that already committed wins; a stale one
+        # loses its version check.
         db.query(VaultStatus).filter(
             VaultStatus.id == vs.id,
             VaultStatus.version == ver,
@@ -116,9 +126,9 @@ def check_in(current_user: User = Depends(require_owner), db: Session = Depends(
             {"state": "active", "grace_started_at": None, "version": ver + 1, "updated_at": now},
             synchronize_session="fetch",
         )
-        db.commit()
     try:
         log_audit("heartbeat.checkin", "owner", current_user.id, vault.id)
     except Exception:
         pass
+    db.commit()
     return {"message": "Check-in recorded", "last_check_in": cfg.last_check_in.isoformat()}

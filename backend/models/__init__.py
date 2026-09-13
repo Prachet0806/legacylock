@@ -1,10 +1,9 @@
 from .audit import AuditEvent
 from .beneficiary import Beneficiary
 from .heartbeat import HeartbeatConfig
-from .message import VaultMessage
+from .message import MessageCategory, VaultMessage
 from .notification import NotificationLog
 from .refresh_token import RefreshToken
-from .share_attempt import ShareAttempt
 from .status import VaultStatus
 from .user import User
 from .vault import Vault

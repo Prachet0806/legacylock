@@ -1,9 +1,31 @@
 from datetime import UTC, datetime
+from enum import Enum
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from db import Base
+
+
+class MessageCategory(str, Enum):
+    """Controlled vocabulary for message classification.
+
+    Single source of truth on the backend; the frontend mirrors it in
+    lib/client.ts MESSAGE_CATEGORIES (kept in sync by convention — see
+    test_message_category_contract).
+    """
+
+    FINANCIAL = "financial"
+    INSURANCE = "insurance"
+    DIGITAL_ASSETS = "digital_assets"
+    DIGITAL_IDENTITY = "digital_identity"
+    DIGITAL_STORAGE = "digital_storage"
+    DEVICES = "devices"
+    ONLINE_ACCOUNTS = "online_accounts"
+    PROPERTY = "property"
+    DEPENDENTS = "dependents"
+    BUSINESS = "business"
+    PERSONAL = "personal"
 
 
 class VaultMessage(Base):

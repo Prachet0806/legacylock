@@ -13,8 +13,8 @@ class VaultStatus(Base):
     vault_id = Column(Integer, ForeignKey("vault.id"), nullable=False, index=True, unique=True)
     state = Column(String(20), nullable=False, default="active")
     version = Column(Integer, nullable=False, default=1)
-    share_threshold = Column(Integer, nullable=True)
-    share_total = Column(Integer, nullable=True)
+    # Recovery policy is a versioned crypto constant (Shamir 2-of-3 for v1),
+    # not per-row data — see frontend Shamir + KDF_CONTRACTS.
     grace_started_at = Column(DateTime(timezone=True), nullable=True)
     triggered_at = Column(DateTime(timezone=True), nullable=True)
     trigger_reason = Column(String(50), nullable=True)

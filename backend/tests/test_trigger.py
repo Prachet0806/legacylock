@@ -35,7 +35,7 @@ class TestVaultStatus:
 
     def test_status_fields_present(self, client, auth):
         data = client.get("/vault/status", headers=auth).json()
-        for field in ("status", "triggered_at", "grace_started_at", "share_threshold", "share_total"):
+        for field in ("status", "triggered_at", "grace_started_at", "updated_at"):
             assert field in data
 
 
@@ -55,6 +55,7 @@ class TestVaultTrigger:
 
     def test_trigger_timestamp_valid_iso(self, client, auth):
         from datetime import datetime
+
         res = client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth).json()
         # Should parse without exception
         datetime.fromisoformat(res["triggered_at"].replace("Z", "+00:00"))
@@ -70,8 +71,50 @@ class TestVaultTrigger:
         assert res.status_code == 422
 
     def test_trigger_wrong_password(self, client, auth):
-        res = client.post("/vault/trigger", json={"password": "wrong-password-123", "confirm": True}, headers=auth)
+        res = client.post(
+            "/vault/trigger", json={"password": "wrong-password-123", "confirm": True}, headers=auth
+        )
         assert res.status_code == 401
+
+    def test_concurrent_triggers_single_transition(self, client, auth):
+        """Parallel triggers (double-click / racing schedulers) → all 200,
+        exactly one real transition, one audit event, one triggered_at."""
+        import concurrent.futures
+
+        # Fresh client per thread (TestClient/httpx clients are not thread-safe
+        # for cookies, but these calls carry explicit Bearer headers).
+        from fastapi.testclient import TestClient
+
+        from db import SessionLocal
+        from main import app
+        from models import AuditEvent
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+
+            def fire(_: int):
+                with TestClient(app, raise_server_exceptions=False) as c:
+                    return c.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
+
+            results = list(pool.map(fire, range(8)))
+        try:
+            assert all(r.status_code == 200 for r in results)
+            stamps = {r.json()["triggered_at"] for r in results}
+            assert len(stamps) == 1, "all responses must agree on one transition"
+            db = SessionLocal()
+            try:
+                import json as _json
+
+                rows = db.query(AuditEvent).filter(AuditEvent.event_type == "vault.trigger").all()
+                real = [
+                    row
+                    for row in rows
+                    if not _json.loads(row.event_metadata or "{}").get("already", False)
+                ]
+                assert len(real) == 1, "exactly one real transition must be audited"
+            finally:
+                db.close()
+        finally:
+            client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
 
 
 class TestVaultReset:
@@ -85,5 +128,7 @@ class TestVaultReset:
         assert status["grace_started_at"] is None
 
     def test_reset_requires_confirm(self, client, auth):
-        res = client.post("/vault/reset-status", json={"password": "TestPass123!Long"}, headers=auth)
+        res = client.post(
+            "/vault/reset-status", json={"password": "TestPass123!Long"}, headers=auth
+        )
         assert res.status_code == 422

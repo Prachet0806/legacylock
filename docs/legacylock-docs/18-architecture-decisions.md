@@ -145,3 +145,19 @@ The Coverage Intelligence Engine is owner-only, deterministic, and metadata-only
 ## Persistence Taxonomy
 
 Persistence and repository concerns remain a distinct architectural layer (C12); this revision does not fold persistence into the feature services.
+
+---
+
+## ADR-018 — Manual Release Proves Account Ownership, Not Cryptographic Authority
+
+**Decision:** Manual vault release requires the *login password* plus explicit confirmation. It deliberately does NOT require the *vault passphrase*.
+
+**Reason:** The two secrets prove different things. The login password proves authenticated account ownership (the requester controls the account). The vault passphrase proves cryptographic authority (the requester can unwrap the VMK) — and demanding it at release time would force the VMK into the release path for no benefit. Release is an authorization decision owned by the account, executed by `TriggerService`; decryption remains a separate, client-local act.
+
+---
+
+## ADR-019 — Recovery Plaintext Lifetime Is Best-Effort In-Memory Only
+
+**Decision:** Decrypted messages and entered shares persist in React state for as long as the recovery page is open so the beneficiary can read the message. They are cleared on navigation away, vault lock, and tab close (`beforeunload`); idle hidden tabs lock after a 5-minute grace period (`visibilitychange`).
+
+**Reason:** JavaScript cannot guarantee secure erasure (immutable strings, GC copies, JIT). The docs therefore promise best-effort in-memory hygiene with explicit clearing points — not assured erasure.

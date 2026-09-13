@@ -1,14 +1,13 @@
 "use client";
 
-// Beneficiary invitation accept: status -> accept -> save token -> link to recovery.
+// Beneficiary invitation accept: status -> accept (cookies carry the session)
+// -> link to recovery. No tokens ever touch JS state or storage.
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowRight, CheckCircle2, MailOpen, ShieldCheck } from "lucide-react";
-import { apiFetch } from "../../../../lib/api";
+import { acceptInvite, getInviteStatus } from "../../../../lib/client";
 import { Spinner, StatusChip } from "../../../../components/ui";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function InvitePage() {
   const raw = useParams()?.hash;
@@ -23,9 +22,7 @@ export default function InvitePage() {
     if (!hash) return;
     (async () => {
       try {
-        const s = await apiFetch<{ invitation_status: string; is_expired: boolean }>(
-          `/access/invite/${hash}/status`,
-        );
+        const s = await getInviteStatus(hash);
         setStatus(s.invitation_status);
         setExpired(s.is_expired);
       } catch (e) {
@@ -39,14 +36,7 @@ export default function InvitePage() {
     setErr("");
     setBusy(true);
     try {
-      const res = await fetch(`${API_URL}/access/invite/${hash}/accept`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`Accept failed (${res.status})`);
-      const data = (await res.json()) as { access_token: string; beneficiary_id: number };
-      // Beneficiary JWT is short-lived; sessionStorage keeps it tab-scoped (VMK/shares never stored).
-      sessionStorage.setItem("legacylock_beneficiary_token", data.access_token);
+      await acceptInvite(hash!);
       setDone(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Accept failed");

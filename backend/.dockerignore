@@ -18,6 +18,8 @@ ENV/
 *.log
 .env
 .env.*
+# JWT signing keys must NEVER bake into the image — mount via secrets.
+keys/
 .vscode/
 .idea/
 *.swp

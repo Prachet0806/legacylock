@@ -4,7 +4,7 @@
 // vault wipe (deletes all encrypted messages, requires login password).
 import { useState } from "react";
 import { AlertOctagon, KeyRound, Trash2 } from "lucide-react";
-import { CRYPTO_VERSION, rewrapVMK } from "../../lib/crypto";
+import { CRYPTO_VERSION, rewrap } from "../../lib/crypto-session";
 import { putCryptoMaterial, wipeVault } from "../../lib/client";
 import { useVault } from "../../lib/store/vault-context";
 import { Modal, Spinner } from "../../components/ui";
@@ -12,7 +12,7 @@ import { useToast } from "../../components/toast";
 
 export default function SettingsPage() {
   const { notify } = useToast();
-  const { vmk } = useVault();
+    const { unlocked } = useVault();
   const [newPass, setNewPass] = useState("");
   const [confirmPass, setConfirmPass] = useState("");
   const [busy, setBusy] = useState(false);
@@ -30,13 +30,13 @@ export default function SettingsPage() {
       notify("error", "Passphrases do not match.");
       return;
     }
-    if (!vmk) {
+    if (!unlocked) {
       notify("error", "Unlock your vault first (Vault page).");
       return;
     }
     setBusy(true);
     try {
-      const material = await rewrapVMK(vmk, newPass);
+      const material = await rewrap(newPass);
       await putCryptoMaterial({
         wrapped_vmk: material.wrapped_vmk_b64,
         vmk_crypto_version: CRYPTO_VERSION,
@@ -92,11 +92,11 @@ export default function SettingsPage() {
           <input id="new-pass-confirm" type="password" className="input" autoComplete="new-password" value={confirmPass} onChange={(e) => setConfirmPass(e.target.value)} />
         </div>
         <div>
-          <button type="button" className="btn-primary text-sm" disabled={busy || !vmk} onClick={onRewrap}>
+          <button type="button" className="btn-primary text-sm" disabled={busy || !unlocked} onClick={onRewrap}>
             {busy && <Spinner />}
             Change passphrase
           </button>
-          {!vmk && <p className="mt-1 text-xs text-faint">Unlock your vault first.</p>}
+          {!unlocked && <p className="mt-1 text-xs text-faint">Unlock your vault first.</p>}
         </div>
       </div>
 

@@ -48,6 +48,7 @@ services:
     networks: ["legacylock"]
 
   pgadmin:
+    profiles: ["dev"]
     image: dpage/pgadmin4:8
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@legacylock.local}

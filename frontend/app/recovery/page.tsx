@@ -1,23 +1,26 @@
 "use client";
 
 // Beneficiary recovery stepper: gate -> shares -> pick message -> decrypt.
-// Reconstruction and decryption happen in this tab; the backend only records
-// share hashes and serves ciphertext to TRIGGERED-vault beneficiaries.
+// Reconstruction and decryption happen in this tab. The server never sees
+// shares (not even hashes): brute-force protection is strict rate limiting
+// plus the client-side failed-attempt lockout below.
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, FileText, Info, ShieldCheck, Ticket, Unlock } from "lucide-react";
 import { clsx } from "clsx";
-import { decryptMessage, sha256Hex, zeroMemory } from "../../lib/crypto";
+import { decryptMessage, zeroMemory } from "../../lib/crypto";
 import { reconstructVMK } from "../../lib/shamir";
 import {
   getAccessStatus,
   getRecoveryMessage,
+  ivOf,
   listRecoveryMessages,
-  reportMismatch,
-  submitShare,
   type RecoveryMessageMeta,
 } from "../../lib/client";
 import { CopyButton, EmptyState, Spinner } from "../../components/ui";
 import { useToast } from "../../components/toast";
+
+const MAX_LOCAL_FAILURES = 5;
+const LOCAL_LOCKOUT_MS = 15 * 60 * 1000;
 
 export default function RecoveryPage() {
   const { notify } = useToast();
@@ -32,6 +35,8 @@ export default function RecoveryPage() {
   const [out, setOut] = useState<{ label: string; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [failures, setFailures] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -58,21 +63,14 @@ export default function RecoveryPage() {
       const a = s1.trim();
       const b = s2.trim();
       if (!a || !b) throw new Error("Enter two shares.");
-      // Hash locally FIRST: raw shares never leave this tab. The server only
-      // records digests ("accepted" = recorded, not verified — only local
-      // reconstruction can verify shares).
-      await submitShare(await sha256Hex(a)).catch((e) => {
-        throw new Error(e instanceof Error ? `Share A rejected: ${e.message}` : "Share A rejected");
-      });
-      await submitShare(await sha256Hex(b)).catch((e) => {
-        throw new Error(e instanceof Error ? `Share B rejected: ${e.message}` : "Share B rejected");
-      });
+      // Reconstruct locally only — shares never leave this tab in any form.
       const raw = reconstructVMK([a, b]);
       setVmk(raw);
+      setFailures(0);
       setMessages(await listRecoveryMessages());
       setStep(3);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Share submission failed");
+      setErr(e instanceof Error ? e.message : "Shares do not combine — check for typos.");
     } finally {
       setBusy(false);
     }
@@ -81,23 +79,26 @@ export default function RecoveryPage() {
   async function onDecrypt(id: number) {
     setErr("");
     setOut(null);
+    if (Date.now() < lockedUntil) {
+      setErr("Too many failed attempts — try again later.");
+      return;
+    }
     setBusy(true);
     try {
       if (!vmk) throw new Error("Enter your shares first.");
       const m = await getRecoveryMessage(id);
       const text = await decryptMessage(
-        { v: m.crypto_version, algo: "AES-256-GCM", kdf: null, iv_b64: m.iv, wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
+        { v: m.crypto_version, algo: "AES-256-GCM", kdf: null, iv_b64: ivOf(m.crypto_metadata), wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
         vmk,
       );
       setSelectedId(id);
+      setFailures(0);
       setOut({ label: m.label, text });
       notify("success", "Decrypted locally.");
     } catch (e) {
-      try {
-        await reportMismatch();
-      } catch {
-        /* counter best-effort; surface the decrypt error below */
-      }
+      const n = failures + 1;
+      setFailures(n);
+      if (n >= MAX_LOCAL_FAILURES) setLockedUntil(Date.now() + LOCAL_LOCKOUT_MS);
       setErr(e instanceof Error ? e.message : "Decrypt failed — shares may not match this vault.");
     } finally {
       setBusy(false);
@@ -156,8 +157,8 @@ export default function RecoveryPage() {
             2. Enter 2 of your 3 shares
           </h2>
           <p className="text-sm text-muted">
-            Paste the shares distributed to you out-of-band. Hashes are recorded server-side
-            for abuse protection; raw shares never leave this tab.
+            Paste the shares distributed to you out-of-band. They never leave
+            this tab in any form — reconstruction happens locally.
           </p>
           <div>
             <label className="label" htmlFor="share-a">Share A</label>

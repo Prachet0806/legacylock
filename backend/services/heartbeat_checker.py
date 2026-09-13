@@ -86,8 +86,10 @@ def _get_vault_status(db: Session, vault_id: int) -> VaultStatus:
     return vs
 
 
-def _has_notification(db: Session, vault_id: int, notif_type: str, beneficiary_id: int | None = None) -> bool:
-    """Check if a notification of a given type has already been sent."""
+def _has_notification(
+    db: Session, vault_id: int, notif_type: str, beneficiary_id: int | None = None
+) -> bool:
+    """Check if a notification of a given type has already been recorded."""
     query = db.query(NotificationLog).filter(
         NotificationLog.vault_id == vault_id,
         NotificationLog.notif_type == notif_type,
@@ -97,25 +99,64 @@ def _has_notification(db: Session, vault_id: int, notif_type: str, beneficiary_i
     return query.first() is not None
 
 
-def _log_notification(
+def _mark_notification(log_id: int, status: str) -> None:
+    """Mark a notification row SENT/FAILED on a fresh session (thread-safe)."""
+    from db import SessionLocal
+
+    db = SessionLocal()
+    try:
+        row = db.query(NotificationLog).filter(NotificationLog.id == log_id).first()
+        if row:
+            row.status = status
+            db.commit()
+    finally:
+        db.close()
+
+
+def _dispatch(
+    channel: str,
+    send_coro,
     db: Session,
     vault_id: int,
     notif_type: str,
-    recipient: str,
-    channel: str,
     beneficiary_id: int | None = None,
 ) -> None:
-    db.add(NotificationLog(
+    """Record PENDING, schedule the send, mark SENT/FAILED on its real result.
+
+    The DB unique constraint on (vault_id, beneficiary_id, type, channel) is
+    the dedup authority; the _has_notification pre-check is only a fast path.
+    """
+    row = NotificationLog(
         vault_id=vault_id,
         beneficiary_id=beneficiary_id,
         channel=channel,
         notif_type=notif_type,
-        status="sent",
-    ))
-    db.commit()
+        status="pending",
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except Exception:
+        # Lost the dedup race: another worker recorded it first.
+        db.rollback()
+        return
+    db.refresh(row)
+    log_id = row.id
+
+    async def _run() -> None:
+        try:
+            ok = await send_coro
+        except Exception:
+            logger.exception("Background notification failed")
+            ok = False
+        _mark_notification(log_id, "sent" if ok else "failed")
+
+    _schedule_coro(_run())
 
 
-def _send_grace_notifications(db: Session, vault_id: int, cfg: HeartbeatConfig, vs: VaultStatus) -> None:
+def _send_grace_notifications(
+    db: Session, vault_id: int, cfg: HeartbeatConfig, vs: VaultStatus
+) -> None:
     """Send escalating notifications during grace period."""
     from services.notifications import send_email, send_sms
 
@@ -130,50 +171,75 @@ def _send_grace_notifications(db: Session, vault_id: int, cfg: HeartbeatConfig, 
     # Day 0+: First warning (once)
     if grace_elapsed >= 0 and not _has_notification(db, vault_id, "grace_warn_1"):
         for b in beneficiaries:
-            _schedule_coro(
+            _dispatch(
+                "email",
                 send_email(
                     b.email,
                     "LegacyLock — Inactivity Warning",
                     f"The vault owner has missed their {cfg.interval_days}-day check-in. "
                     f"If they do not check in within {cfg.grace_days} days, vault access will be released.",
-                )
+                ),
+                db,
+                vault_id,
+                "grace_warn_1",
+                b.id,
             )
-            _log_notification(db, vault_id, "grace_warn_1", b.email, "email", b.id)
         logger.info("Sent grace_warn_1 to %d beneficiaries", len(beneficiaries))
 
     # Day 3+: Second warning (once, only if grace period long enough)
-    if grace_elapsed >= 3 and cfg.grace_days > 3 and not _has_notification(db, vault_id, "grace_warn_2"):
+    if (
+        grace_elapsed >= 3
+        and cfg.grace_days > 3
+        and not _has_notification(db, vault_id, "grace_warn_2")
+    ):
         for b in beneficiaries:
             remaining = max(0, cfg.grace_days - int(grace_elapsed))
-            _schedule_coro(
+            _dispatch(
+                "email",
                 send_email(
                     b.email,
                     "LegacyLock — Vault Release Approaching",
                     f"The vault owner has been inactive for {cfg.interval_days + int(grace_elapsed)} days. "
                     f"Release will occur in {remaining} days.",
-                )
+                ),
+                db,
+                vault_id,
+                "grace_warn_2",
+                b.id,
             )
-            _log_notification(db, vault_id, "grace_warn_2", b.email, "email", b.id)
         logger.info("Sent grace_warn_2 to %d beneficiaries", len(beneficiaries))
 
     # Final 24h warning (once)
-    if grace_elapsed >= max(0, cfg.grace_days - 1) and not _has_notification(db, vault_id, "final_warn"):
+    if grace_elapsed >= max(0, cfg.grace_days - 1) and not _has_notification(
+        db, vault_id, "final_warn"
+    ):
         for b in beneficiaries:
-            _schedule_coro(
+            _dispatch(
+                "email",
                 send_email(
                     b.email,
                     "LegacyLock — FINAL WARNING — Vault Releasing Soon",
                     "The vault will be released within 24 hours. "
                     "If the owner does not check in, you will receive your access share.",
-                )
+                ),
+                db,
+                vault_id,
+                "final_warn",
+                b.id,
             )
-            _log_notification(db, vault_id, "final_warn", b.email, "email", b.id)
             # Also send SMS if phone is available
             if b.phone:
-                _schedule_coro(
-                    send_sms(b.phone, "LegacyLock: Vault releasing in 24 hours. Check your email for details.")
+                _dispatch(
+                    "sms",
+                    send_sms(
+                        b.phone,
+                        "LegacyLock: Vault releasing in 24 hours. Check your email for details.",
+                    ),
+                    db,
+                    vault_id,
+                    "final_warn",
+                    b.id,
                 )
-                _log_notification(db, vault_id, "final_warn", b.phone, "sms", b.id)
         logger.info("Sent final_warn to %d beneficiaries", len(beneficiaries))
 
 
@@ -186,21 +252,31 @@ def _send_trigger_notifications(db: Session, vault_id: int) -> None:
         return
     for b in beneficiaries:
         if not _has_notification(db, vault_id, f"triggered_{b.id}", b.id):
-            _schedule_coro(
+            _dispatch(
+                "email",
                 send_email(
                     b.email,
                     "LegacyLock — Vault Access Released",
                     "The vault owner's inactivity period has expired. "
                     "You have been granted access to the vault. "
                     "Please visit LegacyLock to enter your access share.",
-                )
+                ),
+                db,
+                vault_id,
+                f"triggered_{b.id}",
+                b.id,
             )
-            _log_notification(db, vault_id, f"triggered_{b.id}", b.email, "email", b.id)
             if b.phone:
-                _schedule_coro(
-                    send_sms(b.phone, "LegacyLock: Vault access has been released. Check your email.")
+                _dispatch(
+                    "sms",
+                    send_sms(
+                        b.phone, "LegacyLock: Vault access has been released. Check your email."
+                    ),
+                    db,
+                    vault_id,
+                    f"triggered_sms_{b.id}",
+                    b.id,
                 )
-                _log_notification(db, vault_id, f"triggered_sms_{b.id}", b.phone, "sms", b.id)
     logger.info("Sent trigger notifications to %d beneficiaries", len(beneficiaries))
 
 
@@ -235,10 +311,10 @@ def check_heartbeat(db: Session) -> list[str]:
             try:
                 from services.audit import record_audit
 
-                record_audit(db, vault.id, "system", 0, "heartbeat.grace",
-                             {"reason": "inactivity"})
+                record_audit(db, vault.id, "system", 0, "heartbeat.grace", {"reason": "inactivity"})
+                db.commit()
             except Exception:
-                pass
+                db.rollback()
             _send_grace_notifications(db, vault.id, cfg, vs)
             actions.append(f"vault_{vault.id}_grace_started")
             continue
@@ -255,10 +331,12 @@ def check_heartbeat(db: Session) -> list[str]:
                 try:
                     from services.audit import record_audit
 
-                    record_audit(db, vault.id, "system", 0, "vault.trigger",
-                                 {"reason": "inactivity"})
+                    record_audit(
+                        db, vault.id, "system", 0, "vault.trigger", {"reason": "inactivity"}
+                    )
+                    db.commit()
                 except Exception:
-                    pass
+                    db.rollback()
                 _send_trigger_notifications(db, vault.id)
                 actions.append(f"vault_{vault.id}_triggered")
             else:

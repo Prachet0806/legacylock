@@ -35,8 +35,13 @@ export interface WrappedVmkMaterial {
 
 // --- base64 helpers (browser + node compatible for tests) ---
 export function b64encode(bytes: Uint8Array): string {
+  // Chunked apply avoids O(n²) string growth AND apply() arg limits (~65k)
+  // if message sizes ever grow (chunked/file content on the roadmap).
   let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
+  }
   return btoa(s);
 }
 

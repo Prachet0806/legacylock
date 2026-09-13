@@ -1,10 +1,10 @@
 # LegacyLock — API Design
 
-Base path:
+Base path: none (routers register unversioned: `/auth`, `/vault`,
+`/beneficiaries`, `/heartbeat`, `/access`, `/stats`, `/health`).
 
-```text
-/api/v1
-```
+> Decision: no `/api/v1` prefix for MVP. Introduce versioning only when a
+> second client exists that needs a stability contract.
 
 ## Authentication
 

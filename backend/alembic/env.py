@@ -10,15 +10,15 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 # Ensure `import models` / `import db` resolve from backend/.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from db import Base  # noqa: E402
-
 import models  # noqa: E402,F401  (register metadata)
+from db import Base  # noqa: E402
 
 config = context.config
 

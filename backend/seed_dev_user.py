@@ -44,9 +44,9 @@ def main() -> int:
             print(f"Created user {email}")
         else:
             print(f"User {email} already exists")
-        vault = db.query(Vault).filter(Vault.user_id == user.id).first()
+        vault = db.query(Vault).filter(Vault.user_id == user.id, Vault.is_primary == True).first()
         if not vault:
-            vault = Vault(user_id=user.id, name="Primary Vault")
+            vault = Vault(user_id=user.id, name="Primary Vault", is_primary=True)
             db.add(vault)
             db.commit()
             print("Created Primary Vault")

@@ -1,52 +1,55 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { zeroMemory } from "../crypto";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { isUnlocked, lockVault, subscribe } from "../crypto-session";
 
 interface VaultContextValue {
-  vmk: Uint8Array | null;
   unlocked: boolean;
-  setVMK: (raw: Uint8Array) => void;
   lock: () => void;
 }
 
-// In-memory only — never persist to localStorage/sessionStorage/cookies/URL.
+// In-memory only — the raw VMK lives solely inside lib/crypto-session.ts and
+// is never exposed to components, storage, cookies, or URLs.
 const VaultContext = createContext<VaultContextValue>({
-  vmk: null,
   unlocked: false,
-  setVMK: () => {},
   lock: () => {},
 });
 
 export function VaultProvider({ children }: { children: React.ReactNode }) {
-  const [vmk, setVmkState] = useState<Uint8Array | null>(null);
-  const vmkRef = useRef<Uint8Array | null>(null);
+  const [unlocked, setUnlocked] = useState(isUnlocked());
 
-  const setVMK = useCallback((raw: Uint8Array) => {
-    if (vmkRef.current) zeroMemory(vmkRef.current);
-    const copy = new Uint8Array(raw);
-    vmkRef.current = copy;
-    setVmkState(copy);
-  }, []);
+  useEffect(() => subscribe(() => setUnlocked(isUnlocked())), []);
 
   const lock = useCallback(() => {
-    if (vmkRef.current) zeroMemory(vmkRef.current);
-    vmkRef.current = null;
-    setVmkState(null);
+    lockVault();
   }, []);
 
-  // Clear on tab close / refresh (vault requires re-unlock).
+  // Lock policy (documented): hiding the tab starts a 5-minute grace timer;
+  // returning cancels it. Closing/reloading wipes immediately via beforeunload.
+  // Rationale: instant lock on Alt-Tab punishes legitimate multitasking, while
+  // an unattended visible vault is the actual unattended-device threat.
   useEffect(() => {
-    const onUnload = () => {
-      if (vmkRef.current) zeroMemory(vmkRef.current);
-      vmkRef.current = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onVisibility = () => {
+      if (document.hidden) {
+        timer = setTimeout(lockVault, 5 * 60 * 1000);
+      } else if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
     };
+    const onUnload = () => lockVault();
+    document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("beforeunload", onUnload);
-    return () => window.removeEventListener("beforeunload", onUnload);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("beforeunload", onUnload);
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   return (
-    <VaultContext.Provider value={{ vmk, unlocked: vmk !== null, setVMK, lock }}>
+    <VaultContext.Provider value={{ unlocked, lock }}>
       {children}
     </VaultContext.Provider>
   );

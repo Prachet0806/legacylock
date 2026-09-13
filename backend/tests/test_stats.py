@@ -44,7 +44,11 @@ class TestStats:
         initial = client.get("/stats", headers=auth).json()["message_count"]
         client.post(
             "/vault/messages",
-            json={"label": "test", "ciphertext": base64.b64encode(b"x" * 16).decode(), "wrapped_mek": _WMEK},
+            json={
+                "label": "test",
+                "ciphertext": base64.b64encode(b"x" * 16).decode(),
+                "wrapped_mek": _WMEK,
+            },
             headers=auth,
         )
         after = client.get("/stats", headers=auth).json()["message_count"]

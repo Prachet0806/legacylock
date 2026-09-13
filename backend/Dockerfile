@@ -28,7 +28,10 @@ USER appuser
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=4)"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=4)"
 
-# Run migrations then serve (single-worker in-process heartbeat; use --proxy-headers behind LB)
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers"]
+# Serve only. Migrations run as a one-shot release job BEFORE deploy
+# (see DEPLOY.md) — never from app boot, so replicas can't race.
+# FORWARDED_ALLOW_IPS restricts which proxies' X-Forwarded-* we trust;
+# set it to your LB/CIDR range (default: loopback only).
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips ${FORWARDED_ALLOW_IPS:-127.0.0.1}"]

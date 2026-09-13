@@ -3,6 +3,7 @@
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from config import get_settings
 from db import get_db
 from models import Beneficiary, User
 from services.auth import decode_access_token
@@ -11,12 +12,19 @@ from services.auth import decode_access_token
 # Database session
 # ---------------------------------------------------------------------------
 # Re-export get_db from db.py
-__all__ = ["get_db", "get_current_user", "get_current_beneficiary", "require_owner", "require_beneficiary"]
+__all__ = [
+    "get_db",
+    "get_current_user",
+    "get_current_beneficiary",
+    "require_owner",
+    "require_beneficiary",
+]
 
 
 # ---------------------------------------------------------------------------
 # Authentication - JWT from Authorization header or cookie
 # ---------------------------------------------------------------------------
+
 
 def _get_token_from_request(request: Request) -> str | None:
     """Extract JWT token from Authorization header or HttpOnly cookie."""
@@ -28,7 +36,7 @@ def _get_token_from_request(request: Request) -> str | None:
             return parts[1].strip()
 
     # Try cookie (owner session)
-    return request.cookies.get("legacylock_owner_session")
+    return request.cookies.get(get_settings().session_cookie_name_owner)
 
 
 def _get_beneficiary_token_from_request(request: Request) -> str | None:
@@ -41,7 +49,7 @@ def _get_beneficiary_token_from_request(request: Request) -> str | None:
             return parts[1].strip()
 
     # Try cookie
-    return request.cookies.get("legacylock_beneficiary_session")
+    return request.cookies.get(get_settings().session_cookie_name_beneficiary)
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
@@ -108,7 +116,9 @@ def require_owner(user: User | None = Depends(get_current_user)) -> User:
     return user
 
 
-def require_beneficiary(beneficiary: Beneficiary | None = Depends(get_current_beneficiary)) -> Beneficiary:
+def require_beneficiary(
+    beneficiary: Beneficiary | None = Depends(get_current_beneficiary),
+) -> Beneficiary:
     """Dependency that requires an authenticated beneficiary."""
     if beneficiary is None:
         raise HTTPException(

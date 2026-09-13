@@ -25,7 +25,8 @@ _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
     "/auth/refresh": (10, 120),
     "/access/invite": (10, 100),
     "/access/session": (10, 100),
-    "/access/share": (20, 100),
+    "/access/status": (30, 300),
+    "/access/messages": (30, 300),
     "/beneficiaries": (20, 200),
     "/vault/trigger": (5, 30),
     "/vault/reset-status": (5, 30),
@@ -35,7 +36,13 @@ _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
 class RateLimiterMiddleware(BaseHTTPMiddleware):
     """Simple in-memory rate limiter with per-route buckets and bounded memory."""
 
-    def __init__(self, app, requests_per_minute: int = 60, requests_per_hour: int = 1000, max_keys: int = 10000):
+    def __init__(
+        self,
+        app,
+        requests_per_minute: int = 60,
+        requests_per_hour: int = 1000,
+        max_keys: int = 10000,
+    ):
         super().__init__(app)
         self.requests_per_minute = requests_per_minute
         self.requests_per_hour = requests_per_hour
@@ -59,7 +66,7 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         """Return (limits, bucket_key_prefix) for a path.
 
         The bucket key uses the matched route prefix (not just the first path
-        segment), so e.g. /access/session and /access/share — which share the
+        segment), so e.g. /access/session and /access/status — which share the
         "access" segment but have different limits — get independent buckets.
         """
         for prefix, limits in _ROUTE_LIMITS.items():
@@ -92,6 +99,7 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         # Skip rate limiting in test environment
         try:
             from config import get_settings
+
             if get_settings().environment == "test" and os.environ.get("RATE_LIMIT_TESTING") != "1":
                 return await call_next(request)
         except Exception:

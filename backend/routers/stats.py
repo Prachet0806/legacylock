@@ -23,7 +23,9 @@ class StatsOut(BaseModel):
 
 @router.get("", response_model=StatsOut)
 def get_stats(current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
-    vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
+    vault = (
+        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
+    )
     if not vault:
         return StatsOut(
             message_count=0,

@@ -79,13 +79,18 @@ legacylock/
 │   │   └── globals.css        # Design tokens (dark default, light-ready)
 │   ├── components/            # shell, ui (modal/chips/toast), toast
 │   ├── lib/
-│   │   ├── api.ts             # Cookie-based API client with silent refresh
-│   │   ├── client.ts          # Typed wrappers for all endpoints
+│   │   ├── api.ts             # Re-export shim (see api/ below)
+│   │   ├── api/transport.ts   # Cookie fetch + safe JSON parsing
+│   │   ├── api/owner.ts       # Owner-session wrappers
+│   │   ├── api/beneficiary.ts # Beneficiary-session wrappers
+│   │   ├── api/public.ts      # Login bootstrap (no retry)
+│   │   ├── client.ts          # Backwards-compatible re-exports
 │   │   ├── crypto.ts          # WebCrypto: PBKDF2, AES-GCM, AES-KW
+│   │   ├── crypto-session.ts  # Sole holder of the unwrapped VMK
 │   │   ├── shamir.ts          # Shamir GF(256) 2-of-3 (client only)
-│   │   └── store/vault-context.tsx  # In-memory VMK session
+│   │   └── store/vault-context.tsx  # {unlocked, lock} — never the raw key
 │   ├── tests/                 # Playwright: crypto unit (9), pages/redirects (11),
-│   │                           # health (1), golden owner→trigger→recovery E2E (1)
+│   │                           # health (1), zero-knowledge boundary E2E (1)
 │   ├── .env.local
 │   └── package.json
 │
@@ -95,11 +100,11 @@ legacylock/
 │   ├── db.py                  # SQLAlchemy engine/session
 │   ├── deps.py                # Auth dependencies (owner/beneficiary)
 │   ├── seed_dev_user.py       # Dev-only first-user seeder (no public signup by design)
-│   ├── models/                # SQLAlchemy models (incl. share_attempt, audit)
+│   ├── models/                # SQLAlchemy models (audit, beneficiary, category enum)
 │   ├── routers/
-│   │   ├── access.py          # Invite accept/status, session, status, share submit,
-│   │   │                      # mismatch reports, recovery message fetch
-│   │   ├── auth.py            # Login/logout/refresh/me
+│   │   ├── access.py          # Invite accept/status, cookie session refresh,
+│   │   │                      # recovery message fetch (TRIGGERED-gated)
+│   │   ├── auth.py            # Login/logout/refresh/me (tokens in cookies only)
 │   │   ├── beneficiaries.py   # Beneficiary CRUD + invite + share assignment
 │   │   ├── health.py          # Health check
 │   │   ├── heartbeat.py       # Heartbeat config + check-in
@@ -107,14 +112,13 @@ legacylock/
 │   │   ├── trigger.py         # Vault trigger (confirm + idempotent) / dev reset
 │   │   └── vault.py           # Message CRUD + crypto material + share-assignments alias
 │   ├── services/
-│   │   ├── auth.py            # Argon2id, JWT, session mgmt
-│   │   ├── audit.py           # DB-persisted audit events
-│   │   ├── share_service.py   # Idempotent share submit + INV-20 lockout
+│   │   ├── auth.py            # Argon2id, JWT (owner 15m / beneficiary 30m), session mgmt
+│   │   ├── audit.py           # Audit staging (add-only; callers own the commit)
 │   │   ├── trigger_service.py # CAS state transitions (sole owner)
-│   │   ├── heartbeat_checker.py  # Background heartbeat evaluation
+│   │   ├── heartbeat_checker.py  # Background evaluation + PENDING→SENT/FAILED delivery
 │   │   └── notifications.py   # Mock by default (SendGrid/Twilio optional)
-│   ├── alembic/               # Database migrations
-│   ├── tests/                 # Pytest suite (105 tests passing)
+│   ├── alembic/               # Single explicit 0001_initial migration
+│   ├── tests/                 # Pytest suite (118 tests passing)
 │   ├── requirements.txt
 │   └── pyproject.toml
 │
@@ -304,7 +308,7 @@ To stop: `Ctrl+C` the two servers, then `docker compose stop postgres`
 
 ### Run Tests
 ```bash
-# Backend (105 tests; uses throwaway SQLite, no Postgres needed)
+# Backend (118 tests; file SQLite via Alembic, no Postgres needed)
 cd backend
 venv\Scripts\python -m pytest tests/ -v
 
@@ -358,7 +362,7 @@ npx playwright test            # needs `npx playwright install chromium` once + 
 **Infrastructure**
 - PostgreSQL with auto-created dev schema (+ Alembic migrations)
 - Docker Compose for local dev
-- 105 backend tests passing
+- 118 backend tests passing
 - Frontend TypeScript build passing
 - E2E tests (Playwright: crypto unit + page/redirect specs)
 

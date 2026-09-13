@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { checkin, getMe, getVaultStatus, logout } from "../lib/client";
+import { checkin, getAccessStatus, getMe, getVaultStatus, logout } from "../lib/client";
 import { useVault } from "../lib/store/vault-context";
 import { useToast } from "./toast";
 import { Spinner, StatusChip } from "./ui";
@@ -44,10 +44,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const isPublic = pathname === "/" || pathname?.startsWith(PUBLIC_ACCESS_PREFIX);
-  // Logged-out visitors are bounced to login. /recovery additionally admits
-  // beneficiaries carrying a tab-scoped invite token (server still enforces
-  // auth on every API call; this only decides whether to render the page).
+  // Explicit principal detection — no guessing from storage:
+  // - owner session (GET /auth/me) admits every app route,
+  // - beneficiary session (GET /access/status) admits /recovery only,
+  // - everyone else is bounced to login. The server enforces auth on every
+  //   API call regardless; this only decides whether to render the page.
+  // /recovery is intentionally outside the owner group: it is the
+  // beneficiary-authenticated route.
+  const OWNER_ROUTES = ["/home", "/vault", "/beneficiaries", "/heartbeat", "/settings"];
+  const isOwnerRoute = OWNER_ROUTES.some(
+    (r) => pathname === r || pathname?.startsWith(`${r}/`),
+  );
   const [authed, setAuthed] = useState(false);
+  const [principal, setPrincipal] = useState<"owner" | "beneficiary">("owner");
 
   useEffect(() => {
     if (isPublic) return;
@@ -55,19 +64,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (async () => {
       try {
         await getMe();
-        if (!cancelled) setAuthed(true);
-      } catch {
-        if (cancelled) return;
-        const hasBeneficiaryToken =
-          pathname === "/recovery" &&
-          typeof sessionStorage !== "undefined" &&
-          !!sessionStorage.getItem("legacylock_beneficiary_token");
-        if (hasBeneficiaryToken) {
+        if (!cancelled) {
+          setPrincipal("owner");
           setAuthed(true);
-        } else {
-          router.replace("/");
+        }
+        return;
+      } catch {
+        // Not an owner — fall through to beneficiary check.
+      }
+      if (pathname === "/recovery") {
+        try {
+          await getAccessStatus();
+          if (!cancelled) {
+            setPrincipal("beneficiary");
+            setAuthed(true);
+          }
+          return;
+        } catch {
+          // Not a beneficiary either.
         }
       }
+      if (!cancelled) router.replace("/");
     })();
     return () => {
       cancelled = true;
@@ -75,11 +92,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [pathname, isPublic, router]);
 
   useEffect(() => {
-    if (isPublic || !authed) return;
+    if (isPublic || !authed || principal !== "owner") return;
     getVaultStatus()
       .then((s) => setStatus(s.status))
       .catch(() => {});
-  }, [pathname, isPublic, authed]);
+  }, [pathname, isPublic, authed, principal]);
 
   async function onCheckin() {
     try {
@@ -149,7 +166,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <VaultIcon className="h-5 w-5 text-accent" />
           LegacyLock
         </Link>
-        {nav}
+        {principal === "owner" ? (
+          nav
+        ) : (
+          <p className="rounded-md bg-raised px-3 py-2 text-xs text-muted">
+            Signed in as beneficiary — recovery only.
+          </p>
+        )}
         <div className="mt-auto flex flex-col gap-2 border-t border-border pt-4">
           <StatusChip tone={unlocked ? "success" : "neutral"}>
             {unlocked ? <LockOpen className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
@@ -178,13 +201,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
-          <StatusChip tone={statusTone} pulse={status === "grace"}>
-            {status.toUpperCase()}
-          </StatusChip>
+          {principal === "owner" && (
+            <StatusChip tone={statusTone} pulse={status === "grace"}>
+              {status.toUpperCase()}
+            </StatusChip>
+          )}
           <div className="ml-auto flex items-center gap-2">
-            <button type="button" className="btn-ghost text-xs" onClick={onCheckin}>
-              Check in
-            </button>
+            {principal === "owner" && (
+              <button type="button" className="btn-ghost text-xs" onClick={onCheckin}>
+                Check in
+              </button>
+            )}
             <button type="button" className="btn-ghost px-2 py-1 lg:hidden" onClick={onLogout} aria-label="Log out">
               <LogOut className="h-4 w-4" />
             </button>
@@ -198,7 +225,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <VaultIcon className="h-5 w-5 text-accent" />
               LegacyLock
             </div>
-            {nav}
+            {principal === "owner" ? (
+              nav
+            ) : (
+              <p className="rounded-md bg-raised px-3 py-2 text-xs text-muted">
+                Signed in as beneficiary — recovery only.
+              </p>
+            )}
           </div>
         )}
 

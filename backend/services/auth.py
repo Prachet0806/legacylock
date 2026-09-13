@@ -24,6 +24,9 @@ ph = PasswordHasher(
 JWT_ALGORITHM = "RS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 30
+# Beneficiary sessions are short-lived and independent from owner sessions.
+BENEFICIARY_TOKEN_EXPIRE_MINUTES = 30
+BENEFICIARY_REFRESH_DAYS = 7
 
 
 def _get_jwt_private_key() -> str:
@@ -67,12 +70,21 @@ def generate_refresh_token_hash() -> tuple[str, str]:
     return hash_token(token), token
 
 
-def create_access_token(user_id: int, vault_id: int, role: str) -> str:
-    """Create a short-lived JWT access token. Role is required (no default)."""
+def create_access_token(
+    user_id: int,
+    vault_id: int | None,
+    role: str,
+    expires_minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES,
+) -> str:
+    """Create a short-lived JWT access token. Role is required (no default).
+
+    vault_id may be None for owners who have not set up a vault yet — routers
+    fail closed (404 Vault not found) until setup provisions the primary vault.
+    """
     if role not in ("owner", "beneficiary"):
         raise ValueError("role must be 'owner' or 'beneficiary'")
     now = datetime.now(UTC)
-    expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = now + timedelta(minutes=expires_minutes)
     payload = {
         "sub": str(user_id),
         "vault_id": vault_id,
@@ -84,7 +96,7 @@ def create_access_token(user_id: int, vault_id: int, role: str) -> str:
     return jwt.encode(payload, _get_jwt_private_key(), algorithm=JWT_ALGORITHM)
 
 
-def create_refresh_token(user_id: int, vault_id: int, db: Session) -> tuple[str, str]:
+def create_refresh_token(user_id: int, vault_id: int | None, db: Session) -> tuple[str, str]:
     """Create a new refresh token, store its hash, and return (token, token_hash)."""
     token_hash, token = generate_refresh_token_hash()
     family_id = secrets.token_urlsafe(16)
@@ -156,29 +168,10 @@ def verify_refresh_token(token: str, db: Session) -> RefreshToken | None:
     """
     token_h = hash_token(token)
     candidate = (
-        db.query(RefreshToken)
-        .filter(RefreshToken.token_hash == token_h)
-        .with_for_update()
-        .first()
+        db.query(RefreshToken).filter(RefreshToken.token_hash == token_h).with_for_update().first()
     )
 
     if candidate is None:
-        # Legacy fallback: in case older refresh tokens were hashed with argon2
-        legacy = (
-            db.query(RefreshToken)
-            .filter(
-                RefreshToken.revoked_at.is_(None),
-                RefreshToken.expires_at > datetime.now(UTC),
-            )
-            .all()
-        )
-        for rt in legacy:
-            if rt.token_hash.startswith("$argon2"):
-                try:
-                    if verify_password(token, rt.token_hash):
-                        return rt
-                except Exception:
-                    continue
         return None
 
     if candidate.revoked_at is not None:
@@ -193,10 +186,14 @@ def verify_refresh_token(token: str, db: Session) -> RefreshToken | None:
 
 def revoke_refresh_token_family(family_id: str, db: Session) -> None:
     """Revoke all tokens in a family (used on logout/security event)."""
-    tokens = db.query(RefreshToken).filter(
-        RefreshToken.family_id == family_id,
-        RefreshToken.revoked_at.is_(None),
-    ).all()
+    tokens = (
+        db.query(RefreshToken)
+        .filter(
+            RefreshToken.family_id == family_id,
+            RefreshToken.revoked_at.is_(None),
+        )
+        .all()
+    )
     for rt in tokens:
         rt.revoked_at = datetime.now(UTC)
     db.commit()

@@ -29,7 +29,9 @@ class TestBeneficiaryAuth:
 
 class TestBeneficiaryCRUD:
     def test_add_beneficiary(self, client, auth):
-        res = client.post("/beneficiaries", json={"name": "Alice", "email": "alice@test.com"}, headers=auth)
+        res = client.post(
+            "/beneficiaries", json={"name": "Alice", "email": "alice@test.com"}, headers=auth
+        )
         assert res.status_code == 201
         assert "id" in res.json()
 
@@ -65,7 +67,9 @@ class TestBeneficiaryCRUD:
         assert items[0]["phone"] is None
 
     def test_delete_beneficiary(self, client, auth):
-        post = client.post("/beneficiaries", json={"name": "Alice", "email": "a@t.com"}, headers=auth)
+        post = client.post(
+            "/beneficiaries", json={"name": "Alice", "email": "a@t.com"}, headers=auth
+        )
         ben_id = post.json()["id"]
         res = client.delete(f"/beneficiaries/{ben_id}", headers=auth)
         assert res.status_code == 204
@@ -77,7 +81,11 @@ class TestBeneficiaryCRUD:
         assert res.status_code == 404
 
     def test_response_includes_all_fields(self, client, auth):
-        client.post("/beneficiaries", json={"name": "Alice", "email": "a@t.com", "phone": "123"}, headers=auth)
+        client.post(
+            "/beneficiaries",
+            json={"name": "Alice", "email": "a@t.com", "phone": "123"},
+            headers=auth,
+        )
         item = client.get("/beneficiaries", headers=auth).json()[0]
         for field in ("id", "name", "email", "phone", "created_at"):
             assert field in item
@@ -107,3 +115,63 @@ class TestBeneficiaryValidation:
             headers=auth,
         )
         assert res.status_code == 422
+
+
+class TestBeneficiaryUniqueness:
+    def test_duplicate_email_rejected(self, client, auth):
+        client.post("/beneficiaries", json={"name": "Al", "email": "dupe@t.com"}, headers=auth)
+        res = client.post(
+            "/beneficiaries", json={"name": "Al2", "email": "dupe@t.com"}, headers=auth
+        )
+        assert res.status_code == 409
+
+    def test_db_enforces_uniqueness_despite_race(self, client, auth):
+        """DB constraints are authoritative even if two requests both pass the app check."""
+        import uuid
+
+        from sqlalchemy.exc import IntegrityError
+
+        from db import SessionLocal
+        from models import Beneficiary, Vault
+        from services.auth import decode_access_token
+
+        payload = decode_access_token(auth["Authorization"].split(" ", 1)[1])
+        assert payload is not None
+        vault_id = payload["vault_id"]
+        email = f"race-{uuid.uuid4().hex[:8]}@t.com"
+        db1 = SessionLocal()
+        db2 = SessionLocal()
+        try:
+            db1.add(Beneficiary(vault_id=vault_id, name="R1", email=email))
+            db1.commit()
+            db2.add(Beneficiary(vault_id=vault_id, name="R2", email=email))
+            try:
+                db2.commit()
+            except IntegrityError:
+                db2.rollback()
+            else:
+                raise AssertionError("expected UNIQUE(vault_id, email) to fire")
+            # Same for share_index
+            db1.add(Beneficiary(vault_id=vault_id, name="S1", email=f"s1-{email}", share_index=3))
+            db1.commit()
+            db2.add(Beneficiary(vault_id=vault_id, name="S2", email=f"s2-{email}", share_index=3))
+            try:
+                db2.commit()
+            except IntegrityError:
+                db2.rollback()
+            else:
+                raise AssertionError("expected UNIQUE(vault_id, share_index) to fire")
+        finally:
+            db1.close()
+            db2.close()
+        # Vault sanity: primary vault exists and only one may be primary
+        db = SessionLocal()
+        try:
+            primaries = (
+                db.query(Vault)
+                .filter(Vault.id == vault_id, Vault.is_primary == True)  # noqa: E712
+                .count()
+            )
+            assert primaries == 1
+        finally:
+            db.close()

@@ -25,7 +25,9 @@ _UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 
 def _allowed_hosts() -> set[str]:
     try:
-        origins = [o.strip().rstrip("/") for o in get_settings().allowed_origins.split(",") if o.strip()]
+        origins = [
+            o.strip().rstrip("/") for o in get_settings().allowed_origins.split(",") if o.strip()
+        ]
     except Exception:
         origins = []
     hosts = set()

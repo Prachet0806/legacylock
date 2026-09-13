@@ -28,12 +28,26 @@ class TestMetadataCaps:
         assert r.status_code == 422
 
     def test_small_metadata_accepted(self, client, auth):
-        r = client.post(
-            "/vault/messages", json=_msg(crypto_metadata={"iv": "eA=="}), headers=auth
-        )
+        r = client.post("/vault/messages", json=_msg(crypto_metadata={"iv": "eA=="}), headers=auth)
         assert r.status_code == 201
 
-    def test_kdf_params_capped(self, client, auth):
+    def test_kdf_contract_exact_and_capped(self, client, auth):
+        import base64
+
+        good = {
+            "wrapped_vmk": _WMEK,
+            "vmk_crypto_version": 1,
+            "vmk_kdf_algorithm": "PBKDF2-SHA256",
+            "vmk_kdf_salt": base64.b64encode(b"s" * 16).decode(),
+            "vmk_kdf_parameters": {"iterations": 600000},
+        }
+        assert client.put("/vault/crypto-material", json=good, headers=auth).status_code == 200
+        weak = dict(good, vmk_kdf_parameters={"iterations": 100000})
+        assert client.put("/vault/crypto-material", json=weak, headers=auth).status_code == 422
+        wrong_algo = dict(good, vmk_kdf_algorithm="argon2id")
+        assert (
+            client.put("/vault/crypto-material", json=wrong_algo, headers=auth).status_code == 422
+        )
         body = {
             "wrapped_vmk": _WMEK,
             "vmk_crypto_version": 1,
@@ -85,3 +99,31 @@ class TestLoginLogoutScope:
         r = client.post("/auth/logout", headers=auth)
         assert r.status_code == 200
         assert client.get("/auth/me", headers=auth).status_code == 200
+
+
+class TestAuditAtomicity:
+    def test_failed_mutation_leaves_no_audit_row(self, client, auth):
+        """A rejected request must not leave an orphan audit event behind."""
+        from db import SessionLocal
+        from models import AuditEvent
+
+        def count():
+            db = SessionLocal()
+            try:
+                return db.query(AuditEvent).count()
+            finally:
+                db.close()
+
+        before = count()
+        # 422 validation failure: nothing may be persisted
+        r = client.post(
+            "/vault/messages",
+            json={
+                "label": "t",
+                "ciphertext": "!!!not-base64",
+                "wrapped_mek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            },
+            headers=auth,
+        )
+        assert r.status_code == 422
+        assert count() == before

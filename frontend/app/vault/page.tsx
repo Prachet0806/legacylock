@@ -14,12 +14,13 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { CRYPTO_VERSION, decryptMessage, encryptMessage, unlockVMK } from "../../lib/crypto";
+import { CRYPTO_VERSION, decrypt as decryptWithSession, encrypt as encryptWithSession, unlockVault } from "../../lib/crypto-session";
 import {
   createMessage,
   deleteMessage,
   getCryptoMaterial,
   getMessage,
+  ivOf,
   listMessages,
   MESSAGE_CATEGORIES,
   type MessageMeta,
@@ -29,7 +30,7 @@ import { CopyButton, EmptyState, Modal, Spinner } from "../../components/ui";
 import { useToast } from "../../components/toast";
 
 export default function VaultPage() {
-  const { vmk, setVMK } = useVault();
+  const { unlocked } = useVault();
   const { notify } = useToast();
   const [passphrase, setPassphrase] = useState("");
   const [unlocking, setUnlocking] = useState(false);
@@ -62,14 +63,13 @@ export default function VaultPage() {
       if (!mat.wrapped_vmk || !mat.vmk_kdf_salt || !mat.vmk_kdf_parameters) {
         throw new Error("No vault yet — set one up first.");
       }
-      const raw = await unlockVMK(passphrase, {
+      await unlockVault(passphrase, {
         wrapped_vmk_b64: mat.wrapped_vmk,
         vmk_crypto_version: CRYPTO_VERSION,
         vmk_kdf_algorithm: "PBKDF2-SHA256",
         vmk_kdf_salt_b64: mat.vmk_kdf_salt,
         vmk_kdf_parameters: mat.vmk_kdf_parameters,
       });
-      setVMK(raw);
       await refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Unlock failed");
@@ -84,14 +84,12 @@ export default function VaultPage() {
     setErr("");
     setSaving(true);
     try {
-      if (!vmk) throw new Error("Unlock first");
       if (!label.trim() || !body.trim()) throw new Error("Label and secret text are required.");
-      const payload = await encryptMessage(body, vmk);
+      const payload = await encryptWithSession(body);
       await createMessage({
         label: label.trim(),
         ciphertext: payload.ciphertext_b64,
         wrapped_mek: payload.wrapped_mek_b64,
-        iv: payload.iv_b64,
         crypto_metadata: { iv: payload.iv_b64, v: payload.v },
         category,
         coverage_tags: [],
@@ -112,11 +110,9 @@ export default function VaultPage() {
     setErr("");
     setOpeningId(id);
     try {
-      if (!vmk) throw new Error("Unlock first");
       const m = await getMessage(id);
-      const text = await decryptMessage(
-        { v: m.crypto_version, algo: "AES-256-GCM", kdf: null, iv_b64: m.iv, wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
-        vmk,
+      const text = await decryptWithSession(
+        { v: m.crypto_version, algo: "AES-256-GCM", kdf: null, iv_b64: ivOf(m.crypto_metadata), wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
       );
       setOpened({ label: m.label, text });
     } catch (e) {
@@ -138,15 +134,15 @@ export default function VaultPage() {
   }
 
   useEffect(() => {
-    if (vmk) refresh().catch(() => {});
-  }, [vmk]);
+    if (unlocked) refresh().catch(() => {});
+  }, [unlocked]);
 
   const filtered = useMemo(
     () => messages.filter((m) => m.label.toLowerCase().includes(query.toLowerCase())),
     [messages, query],
   );
 
-  if (!vmk) {
+  if (!unlocked) {
     return (
       <main className="mx-auto max-w-md px-4 py-10">
         <div className="card flex flex-col gap-4">

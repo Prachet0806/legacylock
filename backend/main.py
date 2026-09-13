@@ -10,7 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
 from db import SessionLocal, init_db
 from logging_config import setup_logging
-from middleware import OriginCheckMiddleware, RateLimiterMiddleware, RequestIdMiddleware, SecurityHeadersMiddleware
+from middleware import (
+    OriginCheckMiddleware,
+    RateLimiterMiddleware,
+    RequestIdMiddleware,
+    SecurityHeadersMiddleware,
+)
 from routers import access, auth, beneficiaries, health, heartbeat, stats, trigger, vault
 from services.heartbeat_checker import check_heartbeat
 
@@ -39,6 +44,7 @@ async def _heartbeat_loop() -> None:
         if not get_settings().heartbeat_enabled:
             continue
         try:
+
             def _run() -> list[str]:
                 db = SessionLocal()
                 try:

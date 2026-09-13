@@ -8,17 +8,35 @@ from models import AuditEvent
 
 def record_audit(
     db: Session,
-    vault_id: int,
+    vault_id: int | None,
     actor_type: str,
     actor_id: int,
     event_type: str,
     metadata: dict | None = None,
 ) -> None:
+    """Stage an audit row on the caller's session — add-only, no commit.
+
+    The caller owns the single commit, so the domain mutation and its audit
+    row land atomically together (or neither lands on rollback).
+    """
     safe_meta = dict(metadata or {})
     # Defense-in-depth: strip secret-ish keys even if a caller passes them.
     for k in list(safe_meta.keys()):
         lk = k.lower()
-        if any(s in lk for s in ("password", "passphrase", "vmk", "mek", "kek", "share", "ciphertext", "token", "secret")):
+        if any(
+            s in lk
+            for s in (
+                "password",
+                "passphrase",
+                "vmk",
+                "mek",
+                "kek",
+                "share",
+                "ciphertext",
+                "token",
+                "secret",
+            )
+        ):
             safe_meta[k] = "[REDACTED]"
     import json
 
@@ -31,7 +49,7 @@ def record_audit(
             event_metadata=json.dumps(safe_meta) if safe_meta else None,
         )
     )
-    db.commit()
+    db.flush()
     try:
         log_audit(event_type, actor_type, actor_id, vault_id, **safe_meta)
     except Exception:

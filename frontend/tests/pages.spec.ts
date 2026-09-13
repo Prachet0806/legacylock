@@ -11,13 +11,15 @@ test("/access/invite/[hash] renders", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Beneficiary invitation" })).toBeVisible();
 });
 
-// Protected routes bounce logged-out visitors to / (login).
+// Protected routes bounce logged-out visitors to / (login). Generous timeout:
+// the guard probes getMe() then (on /recovery) getAccessStatus(), and dev
+// cold-compile adds seconds on first hit.
 const PROTECTED = ["/home", "/vault", "/vault/setup", "/beneficiaries", "/heartbeat", "/recovery", "/settings"];
 
 for (const path of PROTECTED) {
   test(`${path} redirects logged-out visitors to /`, async ({ page }) => {
     await page.goto(path);
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/$/, { timeout: 15000 });
     await expect(page.getByRole("heading", { name: "Owner login" })).toBeVisible();
   });
 }
@@ -28,13 +30,13 @@ test("/login redirects to /", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Owner login" })).toBeVisible();
 });
 
-test("/recovery renders gate for token-carrying beneficiaries", async ({ page }) => {
-  // The intended auth-bypass exception: a tab-scoped invite token admits the
-  // recovery page itself (the backend still 403s every API call).
+test("stale sessionStorage token does NOT admit /recovery", async ({ page }) => {
+  // Regression: the shell must not guess beneficiary status from storage.
+  // Admission requires a live beneficiary session (proven by golden.spec.ts).
   await page.addInitScript(() => {
     sessionStorage.setItem("legacylock_beneficiary_token", "test-token");
   });
   await page.goto("/recovery");
-  await expect(page).toHaveURL(/\/recovery$/);
-  await expect(page.getByRole("heading", { name: "Beneficiary recovery" })).toBeVisible();
+  await expect(page).toHaveURL(/\/$/, { timeout: 15000 });
+  await expect(page.getByRole("heading", { name: "Owner login" })).toBeVisible();
 });

@@ -14,6 +14,37 @@ def _invite_link(client, auth):
     return link.rsplit("/", 1)[-1]
 
 
+def _beneficiary_headers(client, auth):
+    """Accept an invite and return explicit beneficiary auth headers.
+
+    Builds the JWT directly (like the owner fixture) for hermetic tests and
+    clears the shared client's cookie jar so no session leaks across tests.
+    """
+    from db import SessionLocal
+    from models import Beneficiary
+    from services.auth import BENEFICIARY_TOKEN_EXPIRE_MINUTES, create_access_token
+
+    client.cookies.clear()
+    raw = _invite_link(client, auth)
+    r = client.post(f"/access/invite/{raw}/accept")
+    assert r.status_code == 200
+    assert "access_token" not in r.json()
+    ben_id = r.json()["beneficiary_id"]
+    db = SessionLocal()
+    try:
+        b = db.query(Beneficiary).filter(Beneficiary.id == ben_id).first()
+        assert b is not None
+        vault_id = b.vault_id
+    finally:
+        db.close()
+    token = create_access_token(
+        ben_id, vault_id, role="beneficiary",
+        expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+    )
+    client.cookies.clear()
+    return {"Authorization": f"Bearer {token}"}
+
+
 class TestInviteFlow:
     def test_invite_stores_hash_not_raw(self, client, auth):
         from db import SessionLocal
@@ -30,19 +61,42 @@ class TestInviteFlow:
             db.close()
 
     def test_accept_and_replay(self, client, auth):
+        client.cookies.clear()
         raw = _invite_link(client, auth)
         assert client.get(f"/access/invite/{raw}/status").status_code == 200
         r = client.post(f"/access/invite/{raw}/accept")
         assert r.status_code == 200
-        assert "access_token" in r.json()
+        assert "access_token" not in r.json()
+        # HttpOnly session + refresh cookies set, nothing in the body
+        assert "legacylock_beneficiary_session" in client.cookies
+        assert "legacylock_beneficiary_refresh" in client.cookies
         # rotated: replay same link is now invalid
         r2 = client.post(f"/access/invite/{raw}/accept")
         assert r2.status_code in (404, 409)
+        client.cookies.clear()
+
+    def test_session_refresh_flow(self, client, auth):
+        client.cookies.clear()
+        raw = _invite_link(client, auth)
+        client.post(f"/access/invite/{raw}/accept")
+        old_refresh = client.cookies.get("legacylock_beneficiary_refresh")
+        assert old_refresh
+        # No JWT needed: the refresh cookie alone renews the session
+        r = client.post("/access/session")
+        assert r.status_code == 200
+        assert "access_token" not in r.json()
+        assert client.cookies.get("legacylock_beneficiary_refresh") != old_refresh
+        # Single-use: the old refresh credential is dead
+        client.cookies.clear()
+        client.cookies.set("legacylock_beneficiary_refresh", old_refresh, path="/access")
+        r2 = client.post("/access/session")
+        assert r2.status_code == 401
+        # No credential at all
+        assert client.post("/access/session").status_code == 401
+        client.cookies.clear()
 
     def test_status_gated_by_trigger(self, client, auth):
-        raw = _invite_link(client, auth)
-        token = client.post(f"/access/invite/{raw}/accept").json()["access_token"]
-        bh = {"Authorization": f"Bearer {token}"}
+        bh = _beneficiary_headers(client, auth)
         assert client.get("/access/status", headers=bh).status_code == 403
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
@@ -53,32 +107,23 @@ class TestInviteFlow:
             client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
 
 
-class TestShareSubmit:
-    def test_submit_idempotent_and_gated(self, client, auth):
-        import base64
-        import hashlib
-        raw = _invite_link(client, auth)
-        token = client.post(f"/access/invite/{raw}/accept").json()["access_token"]
-        bh = {"Authorization": f"Bearer {token}"}
-        share = base64.b64encode(b"s" * 48).decode()
-        digest = hashlib.sha256(share.encode()).hexdigest()
-        # gated before trigger
-        assert client.post("/access/share", json={"share_hash": digest}, headers=bh).status_code == 403
-        client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
-        try:
-            r1 = client.post("/access/share", json={"share_hash": digest}, headers=bh)
-            assert r1.status_code == 200
-            assert r1.json() == {"message": "Share recorded", "accepted": True, "duplicate": False}
-            r2 = client.post("/access/share", json={"share_hash": digest}, headers=bh)
-            assert r2.status_code == 200
-            assert r2.json().get("duplicate") is True
-            assert r2.json().get("accepted") is True
-            assert "verified" not in r2.json()
-            # raw shares are rejected outright
-            assert client.post("/access/share", json={"share": share}, headers=bh).status_code == 422
-            assert client.post("/access/share", json={"share_hash": "not-hex"}, headers=bh).status_code == 400
-        finally:
-            client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
+class TestShareRemoved:
+    def test_share_endpoint_gone(self, client, auth):
+        # Server-side share tracking was removed: the server cannot verify
+        # shares it must never see. Old clients get an explicit 410.
+        bh = _beneficiary_headers(client, auth)
+        r = client.post("/access/share", json={"share_hash": "a" * 64}, headers=bh)
+        assert r.status_code == 410
+        assert client.post("/access/share/report-mismatch", headers=bh).status_code in (404, 405)
+
+    def test_recovery_rate_limited(self, client, auth, monkeypatch):
+        # Abuse protection now lives in strict per-route buckets.
+        monkeypatch.setenv("RATE_LIMIT_TESTING", "1")
+        bh = _beneficiary_headers(client, auth)
+        statuses = {
+            client.post("/access/session", headers=bh).status_code for _ in range(15)
+        }
+        assert 429 in statuses
 
 
 class TestShareAssignments:
@@ -102,9 +147,7 @@ class TestRecoveryMessages:
             json={"label": "will", "ciphertext": ct, "wrapped_mek": wmek},
             headers=auth,
         ).json()["id"]
-        raw = _invite_link(client, auth)
-        token = client.post(f"/access/invite/{raw}/accept").json()["access_token"]
-        return mid, {"Authorization": f"Bearer {token}"}
+        return mid, _beneficiary_headers(client, auth)
 
     def test_gated_before_trigger(self, client, auth):
         _, bh = self._setup(client, auth)
@@ -126,22 +169,6 @@ class TestRecoveryMessages:
             assert client.get("/access/messages/99999", headers=bh).status_code == 404
         finally:
             client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
-
-    def test_mismatch_locks_out(self, client, auth):
-        _, bh = self._setup(client, auth)
-        client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
-        try:
-            for _ in range(5):
-                assert client.post("/access/share/report-mismatch", headers=bh).status_code == 200
-            # locked: next submit of a *new* share hash is rejected
-            import base64
-            import hashlib
-            new_share = base64.b64encode(b"n" * 48).decode()
-            new_digest = hashlib.sha256(new_share.encode()).hexdigest()
-            assert client.post("/access/share", json={"share_hash": new_digest}, headers=bh).status_code == 429
-        finally:
-            client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
-
 
 class TestAuditPersisted:
     def test_trigger_writes_audit_row(self, client, auth):

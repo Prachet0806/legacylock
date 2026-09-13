@@ -15,10 +15,8 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { CRYPTO_VERSION, createWrappedVmk } from "../../../lib/crypto";
-import { splitVMK } from "../../../lib/shamir";
+import { CRYPTO_VERSION, setupVault } from "../../../lib/crypto-session";
 import { putCryptoMaterial } from "../../../lib/client";
-import { useVault } from "../../../lib/store/vault-context";
 import { CopyButton, Spinner } from "../../../components/ui";
 import { useToast } from "../../../components/toast";
 
@@ -37,7 +35,6 @@ function strength(pass: string): { label: string; width: string } {
 export default function VaultSetupPage() {
   const router = useRouter();
   const { notify } = useToast();
-  const { setVMK } = useVault();
   const [step, setStep] = useState(1);
   const [passphrase, setPassphrase] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -53,7 +50,7 @@ export default function VaultSetupPage() {
     setErr("");
     setBusy(true);
     try {
-      const { vmk, material } = await createWrappedVmk(passphrase);
+      const { material, shares: freshShares } = await setupVault(passphrase);
       await putCryptoMaterial({
         wrapped_vmk: material.wrapped_vmk_b64,
         vmk_crypto_version: CRYPTO_VERSION,
@@ -61,8 +58,7 @@ export default function VaultSetupPage() {
         vmk_kdf_salt: material.vmk_kdf_salt_b64,
         vmk_kdf_parameters: material.vmk_kdf_parameters,
       });
-      setShares(splitVMK(vmk));
-      setVMK(vmk);
+      setShares(freshShares);
       // The passphrase has served its purpose (KEK derived + VMK wrapped);
       // drop both copies so a failure below doesn't leave them in state.
       setPassphrase("");

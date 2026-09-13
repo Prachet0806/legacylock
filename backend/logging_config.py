@@ -7,6 +7,7 @@ from typing import Any
 
 class AuditFilter(logging.Filter):
     """Filter to separate audit logs from operational logs."""
+
     def filter(self, record: logging.LogRecord) -> bool:
         return getattr(record, "audit", False)
 
@@ -18,11 +19,21 @@ class OperationalFilter(logging.Filter):
 
 class SensitiveDataFilter(logging.Filter):
     """Redact sensitive fields from log records. Defense-in-depth only."""
+
     SENSITIVE_KEYS = {
-        "password", "passphrase", "vmk", "mek", "kek",
-        "session_secret", "jwt", "token", "cookie",
-        "authorization", "invitation",
-        "database_url", "secret",
+        "password",
+        "passphrase",
+        "vmk",
+        "mek",
+        "kek",
+        "session_secret",
+        "jwt",
+        "token",
+        "cookie",
+        "authorization",
+        "invitation",
+        "database_url",
+        "secret",
     }
 
     def _redact_value(self, value: object) -> object:
@@ -36,7 +47,10 @@ class SensitiveDataFilter(logging.Filter):
                 return "[REDACTED-EMAIL]"
             return value
         if isinstance(value, dict):
-            return {k: ("[REDACTED]" if k.lower() in self.SENSITIVE_KEYS else self._redact_value(v)) for k, v in value.items()}
+            return {
+                k: ("[REDACTED]" if k.lower() in self.SENSITIVE_KEYS else self._redact_value(v))
+                for k, v in value.items()
+            }
         if isinstance(value, (list, tuple)):
             return type(value)(self._redact_value(v) for v in value)
         return value
@@ -51,7 +65,11 @@ class SensitiveDataFilter(logging.Filter):
                     break
         if record.args:
             try:
-                record.args = tuple(self._redact_value(a) for a in record.args) if isinstance(record.args, tuple) else self._redact_value(record.args)
+                record.args = (
+                    tuple(self._redact_value(a) for a in record.args)
+                    if isinstance(record.args, tuple)
+                    else self._redact_value(record.args)
+                )
             except Exception:
                 record.args = ()
         return True
@@ -76,11 +94,32 @@ class JSONFormatter(logging.Formatter):
             log_data["vault_id"] = getattr(record, "vault_id", None)
             # Include extra metadata (excluding reserved LogRecord attrs)
             reserved = {
-                "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
-                "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
-                "created", "msecs", "relativeCreated", "thread", "threadName",
-                "processName", "process", "audit", "event_type", "actor_type",
-                "actor_id", "vault_id", "message",
+                "name",
+                "msg",
+                "args",
+                "levelname",
+                "levelno",
+                "pathname",
+                "filename",
+                "module",
+                "exc_info",
+                "exc_text",
+                "stack_info",
+                "lineno",
+                "funcName",
+                "created",
+                "msecs",
+                "relativeCreated",
+                "thread",
+                "threadName",
+                "processName",
+                "process",
+                "audit",
+                "event_type",
+                "actor_type",
+                "actor_id",
+                "vault_id",
+                "message",
             }
             for k, v in record.__dict__.items():
                 if k not in reserved and not k.startswith("_"):
@@ -115,11 +154,7 @@ def setup_logging() -> None:
 
 
 def log_audit(
-    event_type: str,
-    actor_type: str,
-    actor_id: int,
-    vault_id: int | None = None,
-    **metadata: Any
+    event_type: str, actor_type: str, actor_id: int, vault_id: int | None = None, **metadata: Any
 ) -> None:
     logger = logging.getLogger("audit")
     logger.info(
@@ -130,6 +165,6 @@ def log_audit(
             "actor_type": actor_type,
             "actor_id": actor_id,
             "vault_id": vault_id,
-            **metadata
-        }
+            **metadata,
+        },
     )

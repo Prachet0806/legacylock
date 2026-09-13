@@ -7,19 +7,24 @@ This module handles:
 - Owner share assignment metadata
 """
 
+import json
 import secrets
 from datetime import UTC, datetime, timedelta
-import json
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from config import get_settings
-from deps import get_current_beneficiary, get_db, require_beneficiary, require_owner
+from deps import get_db, require_beneficiary, require_owner
 from models import Beneficiary, User, Vault, VaultMessage, VaultStatus
 from services.audit import record_audit
-from services.auth import create_access_token, hash_token
+from services.auth import (
+    BENEFICIARY_REFRESH_DAYS,
+    BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+    create_access_token,
+    hash_token,
+)
 
 # Public router — no auth required (for invitation acceptance)
 public_router = APIRouter(
@@ -39,13 +44,18 @@ router = APIRouter(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_vault(db: Session, current_user: User | Beneficiary | None = None) -> Vault:
     """Get vault scoped to user/beneficiary. Fail closed (no cross-tenant fallback)."""
     vault_id = None
     if current_user is not None:
         vault_id = getattr(current_user, "vault_id", None)
         if vault_id is None and isinstance(current_user, User):
-            vault = db.query(Vault).filter(Vault.user_id == current_user.id).first()
+            vault = (
+                db.query(Vault)
+                .filter(Vault.user_id == current_user.id, Vault.is_primary == True)
+                .first()
+            )
             if vault:
                 return vault
             raise HTTPException(status_code=404, detail="Vault not found")
@@ -60,9 +70,9 @@ def _get_vault(db: Session, current_user: User | Beneficiary | None = None) -> V
 def _find_by_invite(db: Session, raw_token: str) -> Beneficiary | None:
     """Look up beneficiary by invitation token. The DB stores SHA-256 hashes
     only — pre-hashing rows cannot exist and are treated as invalid."""
-    return db.query(Beneficiary).filter(
-        Beneficiary.invitation_hash == hash_token(raw_token)
-    ).first()
+    return (
+        db.query(Beneficiary).filter(Beneficiary.invitation_hash == hash_token(raw_token)).first()
+    )
 
 
 def _queue_email(to: str, subject: str, body: str) -> None:
@@ -92,20 +102,22 @@ def _queue_email(to: str, subject: str, body: str) -> None:
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class InvitationAccept(BaseModel):
     """Beneficiary accepts invitation."""
+
     pass
 
 
 class InvitationAcceptOut(BaseModel):
+    # Tokens travel via HttpOnly cookies only — never in JSON bodies.
     message: str
     beneficiary_id: int
-    access_token: str
-    token_type: str = "bearer"
 
 
 class AccessStatusOut(BaseModel):
     """Vault status for beneficiary."""
+
     vault_status: str
     vault_name: str
     share_index: int | None
@@ -113,16 +125,15 @@ class AccessStatusOut(BaseModel):
 
 
 class SessionCreateOut(BaseModel):
-    """Response for beneficiary session creation."""
+    # Tokens travel via HttpOnly cookies only — never in JSON bodies.
     message: str
     beneficiary_id: int
-    access_token: str
-    token_type: str = "bearer"
     expires_in: int = 1800  # 30 minutes
 
 
 class ShareAssignmentOut(BaseModel):
     """Owner view of beneficiary share assignment."""
+
     beneficiary_id: int
     beneficiary_name: str
     beneficiary_email: str
@@ -131,15 +142,10 @@ class ShareAssignmentOut(BaseModel):
     has_public_key: bool = False  # Deprecated - kept for compatibility
 
 
-class ShareSubmit(BaseModel):
-    # Raw shares are NEVER accepted: the browser hashes with SHA-256 first.
-    # Only the 64-char hex digest crosses the trust boundary.
-    share_hash: str
-
-
 # ---------------------------------------------------------------------------
 # Public Routes (no auth required)
 # ---------------------------------------------------------------------------
+
 
 @public_router.post("/invite/{invitation_hash}/accept", response_model=InvitationAcceptOut)
 def accept_invitation(invitation_hash: str, response: Response, db: Session = Depends(get_db)):
@@ -175,30 +181,47 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
     beneficiary.invitation_hash = hash_token(secrets.token_urlsafe(32))
     db.commit()
 
-    # Create beneficiary-scoped access token (explicit role)
+    # Create beneficiary-scoped access token (explicit role, 30-minute life)
     vault = _get_vault(db, beneficiary)
-    access_token = create_access_token(beneficiary.id, vault.id, role="beneficiary")
+    access_token = create_access_token(
+        beneficiary.id,
+        vault.id,
+        role="beneficiary",
+        expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+    )
     record_audit(db, vault.id, "beneficiary", beneficiary.id, "invite.accept", {})
+    db.commit()
+    # Issue a single-use refresh credential (hash stored, raw in cookie only)
+    raw_refresh = secrets.token_urlsafe(32)
+    beneficiary.refresh_hash = hash_token(raw_refresh)
+    beneficiary.refresh_expires_at = datetime.now(UTC) + timedelta(days=BENEFICIARY_REFRESH_DAYS)
+    db.commit()
 
-    # Also set beneficiary HttpOnly cookie for browser flows
-    try:
-        secure = get_settings().environment == "production"
-    except Exception:
-        secure = False
+    # Cookies carry both tokens; JSON carries none.
+    settings = get_settings()
+    secure = settings.environment == "production"
     response.set_cookie(
-        key="legacylock_beneficiary_session",
+        key=settings.session_cookie_name_beneficiary,
         value=access_token,
         httponly=True,
         secure=secure,
         samesite="lax",
-        max_age=15 * 60,
+        max_age=30 * 60,
         path="/",
+    )
+    response.set_cookie(
+        key=settings.session_cookie_name_beneficiary_refresh,
+        value=raw_refresh,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=7 * 24 * 60 * 60,
+        path="/access",
     )
 
     return InvitationAcceptOut(
         message="Invitation accepted. You can now access the vault.",
         beneficiary_id=beneficiary.id,
-        access_token=access_token,
     )
 
 
@@ -214,7 +237,6 @@ def check_invitation_status(invitation_hash: str, db: Session = Depends(get_db))
     if beneficiary.invitation_sent_at:
         sent = beneficiary.invitation_sent_at
         if sent.tzinfo is None:
-
             sent = sent.replace(tzinfo=UTC)
         expiry = sent + timedelta(days=7)
         is_expired = datetime.now(UTC) > expiry
@@ -231,47 +253,75 @@ def check_invitation_status(invitation_hash: str, db: Session = Depends(get_db))
 
 @public_router.post("/session", response_model=SessionCreateOut)
 def create_beneficiary_session(
+    request: Request,
     response: Response,
-    current_beneficiary: Beneficiary = Depends(get_current_beneficiary),
     db: Session = Depends(get_db),
 ):
-    """Create a new beneficiary session (refresh token flow for beneficiaries).
-    
-    This endpoint allows beneficiaries to refresh their session using their
-    existing valid beneficiary token. The new token has a 30-minute lifetime.
+    """Renew a beneficiary session from its refresh cookie.
+
+    Unlike the old flow, this does NOT require a still-valid access JWT: the
+    single-use refresh credential (HttpOnly cookie) is the credential. Each
+    use rotates both the session and the refresh credential.
     """
-    # Verify beneficiary has accepted invitation
-    if current_beneficiary.invitation_status != "accepted":
-        raise HTTPException(status_code=403, detail="Invitation not accepted")
+    raw_refresh = request.cookies.get(get_settings().session_cookie_name_beneficiary_refresh)
+    if not raw_refresh:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    beneficiary = (
+        db.query(Beneficiary).filter(Beneficiary.refresh_hash == hash_token(raw_refresh)).first()
+    )
+    if not beneficiary or beneficiary.invitation_status != "accepted":
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    exp = beneficiary.refresh_expires_at
+    if exp is not None:
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=UTC)
+        if datetime.now(UTC) > exp:
+            raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    vault = _get_vault(db, current_beneficiary)
-    access_token = create_access_token(current_beneficiary.id, vault.id, role="beneficiary")
+    vault = _get_vault(db, beneficiary)
+    access_token = create_access_token(
+        beneficiary.id,
+        vault.id,
+        role="beneficiary",
+        expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+    )
+    # Rotate: old refresh dies with this use.
+    new_raw = secrets.token_urlsafe(32)
+    beneficiary.refresh_hash = hash_token(new_raw)
+    beneficiary.refresh_expires_at = datetime.now(UTC) + timedelta(days=BENEFICIARY_REFRESH_DAYS)
+    db.commit()
 
-    # Set beneficiary HttpOnly cookie
-    try:
-        secure = get_settings().environment == "production"
-    except Exception:
-        secure = False
+    settings = get_settings()
+    secure = settings.environment == "production"
     response.set_cookie(
-        key="legacylock_beneficiary_session",
+        key=settings.session_cookie_name_beneficiary,
         value=access_token,
         httponly=True,
         secure=secure,
         samesite="lax",
-        max_age=30 * 60,  # 30 minutes
+        max_age=30 * 60,
         path="/",
+    )
+    response.set_cookie(
+        key=settings.session_cookie_name_beneficiary_refresh,
+        value=new_raw,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=7 * 24 * 60 * 60,
+        path="/access",
     )
 
     return SessionCreateOut(
         message="Session created",
-        beneficiary_id=current_beneficiary.id,
-        access_token=access_token,
+        beneficiary_id=beneficiary.id,
     )
 
 
 # ---------------------------------------------------------------------------
 # Protected Routes (beneficiary auth required)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/status", response_model=AccessStatusOut)
 def get_access_status(
@@ -295,26 +345,15 @@ def get_access_status(
 
 
 @router.post("/share")
-def submit_share(
-    data: ShareSubmit,
-    current_beneficiary: Beneficiary = Depends(require_beneficiary),
-    db: Session = Depends(get_db),
-):
-    """Submit a client-hashed Shamir share for recovery.
+def submit_share():
+    """Removed: the server cannot verify shares it must never see.
 
-    The backend only compares/stores the SHA-256 hex digest (idempotent
-    resubmit = no-op) and never sees raw share material, plaintext, or the
-    VMK. "Accepted" means recorded — only the browser can verify that shares
-    reconstruct the VMK. Vault must be TRIGGERED.
+    Share-hash tracking was deleted — a fingerprint the backend can neither
+    verify nor reconstruct provides no security benefit. Abuse protection
+    lives in strict rate limits on session creation, status, and message
+    retrieval, plus a client-side failed-attempt counter. Gone in 410 style:
     """
-    from services.share_service import submit_share as _submit
-
-    vault = _get_vault(db, current_beneficiary)
-    _require_triggered(db, vault.id)
-    result = _submit(db, vault.id, current_beneficiary.id, data.share_hash)
-    record_audit(db, vault.id, "beneficiary", current_beneficiary.id, "share.submit",
-                 {"duplicate": result.get("duplicate", False)})
-    return result
+    raise HTTPException(status_code=410, detail="Share submission removed; reconstruct locally")
 
 
 class RecoveryMessageMeta(BaseModel):
@@ -329,7 +368,7 @@ class RecoveryMessageDetail(BaseModel):
     label: str
     ciphertext: str
     wrapped_mek: str
-    iv: str
+    crypto_metadata: dict
     crypto_version: int
     category: str | None = None
     created_at: str
@@ -339,25 +378,6 @@ def _require_triggered(db: Session, vault_id: int) -> None:
     vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault_id).first()
     if not vs or vs.state != "triggered":
         raise HTTPException(status_code=403, detail="Vault not triggered")
-
-
-@router.post("/share/report-mismatch")
-def report_share_mismatch(
-    current_beneficiary: Beneficiary = Depends(require_beneficiary),
-    db: Session = Depends(get_db),
-):
-    """Report that submitted shares failed local reconstruction.
-
-    Feeds the per-beneficiary invalid-attempt counter (INV-20): after
-    MAX_FAILURES mismatches the beneficiary is locked out for 15 minutes.
-    Vault must be TRIGGERED.
-    """
-    from services.share_service import report_mismatch as _report
-
-    vault = _get_vault(db, current_beneficiary)
-    _require_triggered(db, vault.id)
-    _report(db, vault.id, current_beneficiary.id)
-    return {"message": "Mismatch recorded"}
 
 
 @router.get("/messages", response_model=list[RecoveryMessageMeta])
@@ -416,7 +436,7 @@ def get_recovery_message(
         label=message.label,
         ciphertext=message.ciphertext,
         wrapped_mek=message.wrapped_mek,
-        iv=metadata.get("iv", ""),
+        crypto_metadata=metadata,
         crypto_version=message.crypto_version,
         category=message.category,
         created_at=message.created_at.isoformat() if message.created_at else "",
@@ -440,7 +460,7 @@ def list_share_assignments(
     db: Session = Depends(get_db),
 ):
     """List which beneficiaries have share assignments (owner view).
-    
+
     Returns metadata only - no encrypted shares or public keys.
     """
     vault = _get_vault(db, current_user)

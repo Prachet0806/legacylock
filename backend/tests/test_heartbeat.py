@@ -1,13 +1,14 @@
 """Tests for /heartbeat routes."""
 
 
-
 class TestHeartbeatAuth:
     def test_get_requires_auth(self, client):
         assert client.get("/heartbeat").status_code == 401
 
     def test_put_requires_auth(self, client):
-        assert client.put("/heartbeat", json={"interval_days": 30, "grace_days": 7}).status_code == 401
+        assert (
+            client.put("/heartbeat", json={"interval_days": 30, "grace_days": 7}).status_code == 401
+        )
 
     def test_checkin_requires_auth(self, client):
         assert client.post("/heartbeat/checkin").status_code == 401
@@ -40,7 +41,9 @@ class TestHeartbeatConfig:
 
     def test_checkin_updates_timestamp(self, client, auth):
         r1 = client.post("/heartbeat/checkin", headers=auth).json()["last_check_in"]
-        import time; time.sleep(0.01)
+        import time
+
+        time.sleep(0.01)
         r2 = client.post("/heartbeat/checkin", headers=auth).json()["last_check_in"]
         assert r2 >= r1
 
