@@ -118,9 +118,15 @@ class TestDatabaseZeroKnowledge:
         from models import User, Vault
         from services.auth import hash_password
 
+        from datetime import UTC, datetime
+
         db = SessionLocal()
         try:
-            user = User(email=email, password_hash=hash_password(password))
+            user = User(
+                email=email,
+                password_hash=hash_password(password),
+                email_verified_at=datetime.now(UTC),
+            )
             db.add(user)
             db.commit()
             db.refresh(user)

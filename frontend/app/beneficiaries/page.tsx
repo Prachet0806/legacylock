@@ -6,6 +6,7 @@ import {
   addBeneficiary,
   assignShare,
   deleteBeneficiary,
+  getRecoveryPolicy,
   inviteBeneficiary,
   listBeneficiaries,
   type Beneficiary,
@@ -17,7 +18,15 @@ function statusTone(s: string): "success" | "warn" | "neutral" {
   return s === "accepted" ? "success" : s === "sent" ? "warn" : "neutral";
 }
 
-function ShareAssign({ b, onAssigned }: { b: Beneficiary; onAssigned: () => void }) {
+function ShareAssign({
+  b,
+  total,
+  onAssigned,
+}: {
+  b: Beneficiary;
+  total: number;
+  onAssigned: () => void;
+}) {
   const { notify } = useToast();
   const [idx, setIdx] = useState<string>(b.share_index != null ? String(b.share_index) : "");
   async function onClick() {
@@ -39,9 +48,9 @@ function ShareAssign({ b, onAssigned }: { b: Beneficiary; onAssigned: () => void
         title="Which Shamir share this beneficiary receives"
       >
         <option value="">Share…</option>
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
+        {Array.from({ length: total }, (_, i) => i + 1).map((n) => (
+          <option key={n} value={n}>{n}</option>
+        ))}
       </select>
       <button type="button" className="btn-ghost px-2 py-1 text-xs" disabled={!idx} onClick={onClick}>
         Assign
@@ -53,6 +62,8 @@ function ShareAssign({ b, onAssigned }: { b: Beneficiary; onAssigned: () => void
 export default function BeneficiariesPage() {
   const { notify } = useToast();
   const [rows, setRows] = useState<Beneficiary[]>([]);
+  const [threshold, setThreshold] = useState(2);
+  const [total, setTotal] = useState(3);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [err, setErr] = useState("");
@@ -62,7 +73,12 @@ export default function BeneficiariesPage() {
 
   async function refresh() {
     try {
-      setRows(await listBeneficiaries());
+      const [list, policy] = await Promise.all([listBeneficiaries(), getRecoveryPolicy().catch(() => null)]);
+      setRows(list);
+      if (policy) {
+        setThreshold(policy.recovery_threshold);
+        setTotal(policy.recovery_total);
+      }
     } finally {
       setLoading(false);
     }
@@ -107,23 +123,23 @@ export default function BeneficiariesPage() {
     }
   }
 
-  const ready = rows.length >= 3;
+  const ready = rows.length >= total;
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
       <div className="mb-2 flex items-center gap-3">
         <h1 className="text-2xl font-bold">Beneficiaries</h1>
-        <span className="chip">{rows.length} of 3 needed for 2-of-3</span>
+        <span className="chip">{rows.length} of {total} needed for {threshold}-of-{total}</span>
       </div>
       <p className="mb-6 text-sm text-muted">
-        Each beneficiary receives one Shamir share index. Recovery needs any 2 of 3 —
-        configure at least three people you trust.
+        Each beneficiary receives one Shamir share index. Recovery needs any {threshold} of {total} —
+        configure at least {total} {total === 1 ? "person" : "people"} you trust.
       </p>
 
       {!ready && (
         <div className="card mb-4 border-warn text-sm">
-          Add {3 - rows.length} more {rows.length === 2 ? "beneficiary" : "beneficiaries"} to
-          reach a 2-of-3 recovery policy.
+          Add {total - rows.length} more {total - rows.length === 1 ? "beneficiary" : "beneficiaries"} to
+          reach a {threshold}-of-{total} recovery policy.
         </div>
       )}
 
@@ -174,7 +190,7 @@ export default function BeneficiariesPage() {
               {b.share_index != null ? (
                 <span className="chip">Share {b.share_index}</span>
               ) : (
-                <ShareAssign b={b} onAssigned={refresh} />
+                <ShareAssign b={b} total={total} onAssigned={refresh} />
               )}
               <button type="button" className="btn-ghost px-2 py-1 text-xs" title="Send invitation" onClick={() => onInvite(b)}>
                 <Send className="h-3.5 w-3.5" />

@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     # JWT RS256 keys (paths relative to backend/ or absolute)
     jwt_private_key_path: str = "keys/jwt_private.pem"
     jwt_public_key_path: str = "keys/jwt_public.pem"
+    # Gated self-service registration (B-spec): empty = disabled (fail-closed).
+    # Distribute the code out-of-band; rotation = new value + restart.
+    registration_invite_code: str = ""
+    # Email delivery via Resend (empty = mock-log). Replaces SendGrid.
+    resend_api_key: str = ""
+    notification_email_from: str = "noreply@legacylock.app"
+    email_verification_ttl_hours: int = 24
 
     model_config = SettingsConfigDict(
         env_file=REPO_ROOT / ".env",
@@ -49,6 +56,9 @@ class Settings(BaseSettings):
 
     def frontend_origin(self) -> str:
         return self.frontend_url.rstrip("/")
+
+    def registration_enabled(self) -> bool:
+        return bool(self.registration_invite_code.strip())
 
     def jwt_private_key(self) -> str:
         """Load RSA private key for JWT signing."""

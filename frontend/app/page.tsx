@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import {
@@ -12,6 +13,7 @@ import {
   Vault as VaultIcon,
 } from "lucide-react";
 import { login } from "../lib/api";
+import { resendVerification } from "../lib/api/public";
 import { useToast } from "../components/toast";
 
 const HIGHLIGHTS = [
@@ -22,8 +24,8 @@ const HIGHLIGHTS = [
   },
   {
     icon: KeyRound,
-    title: "Shamir 2-of-3 recovery",
-    hint: "Your vault key splits into three shares. Any two reconstruct it — locally.",
+    title: "Shamir threshold recovery",
+    hint: "Your vault key splits into n shares. Any k reconstruct it — locally.",
   },
   {
     icon: HeartPulse,
@@ -40,20 +42,35 @@ export default function LoginPage() {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [unverified, setUnverified] = useState(false);
+  const [resent, setResent] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr("");
+    setUnverified(false);
     setBusy(true);
     try {
       await login(email, password);
       notify("success", "Logged in.");
       router.push("/home");
-    } catch {
-      setErr("Invalid email or password.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      if (msg.includes("403")) {
+        setUnverified(true);
+        setErr("Email not verified. Check your inbox for the link.");
+      } else {
+        setErr("Invalid email or password.");
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  async function onResend() {
+    if (!email.trim()) return;
+    await resendVerification(email.trim()).catch(() => undefined);
+    setResent(true);
   }
 
   return (
@@ -158,6 +175,19 @@ export default function LoginPage() {
             {err && (
               <p role="alert" className="text-sm text-danger">{err}</p>
             )}
+            {unverified && (
+              <div className="flex flex-col gap-2">
+                {resent ? (
+                  <p role="status" className="text-sm text-muted">
+                    If the account needs verification, an email has been sent.
+                  </p>
+                ) : (
+                  <button type="button" className="btn-secondary w-full" onClick={onResend}>
+                    Resend verification email
+                  </button>
+                )}
+              </div>
+            )}
             <button type="submit" className="btn-primary w-full" disabled={busy}>
               <Lock className="h-4 w-4" />
               {busy ? "Logging in…" : "Log in"}
@@ -171,8 +201,8 @@ export default function LoginPage() {
           <p className="flex items-start gap-2 text-xs text-faint">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-success" />
             <span>
-              Sessions live in HttpOnly cookies. No account yet? Ask your administrator to
-              run seed_dev_user.py — there is no public signup by design.
+              Sessions live in HttpOnly cookies. Have an invite code?{" "}
+              <Link className="underline" href="/register">Create an account</Link>.
             </span>
           </p>
         </div>

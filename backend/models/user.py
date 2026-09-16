@@ -12,6 +12,9 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(320), unique=True, nullable=False, index=True)
     password_hash = Column(Text, nullable=False)
+    # NULL = unverified (new registrations). Grandfathered for pre-existing rows
+    # via migration 0002 backfill; new rows must verify before login.
+    email_verified_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

@@ -15,6 +15,8 @@ BACKEND_DIR = Path(__file__).parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from datetime import UTC, datetime  # noqa: E402
+
 from config import get_settings  # noqa: E402
 from db import SessionLocal, init_db  # noqa: E402
 from models import User, Vault  # noqa: E402
@@ -37,12 +39,20 @@ def main() -> int:
     try:
         user = db.query(User).filter(User.email == email).first()
         if not user:
-            user = User(email=email, password_hash=hash_password(password))
+            # Dev seeds prove mailbox control out-of-band — mark verified.
+            user = User(
+                email=email,
+                password_hash=hash_password(password),
+                email_verified_at=datetime.now(UTC),
+            )
             db.add(user)
             db.commit()
             db.refresh(user)
             print(f"Created user {email}")
         else:
+            if user.email_verified_at is None:
+                user.email_verified_at = datetime.now(UTC)
+                db.commit()
             print(f"User {email} already exists")
         vault = db.query(Vault).filter(Vault.user_id == user.id, Vault.is_primary == True).first()
         if not vault:

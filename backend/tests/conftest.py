@@ -17,6 +17,9 @@ os.environ["DATABASE_URL"] = (
 os.environ["ALLOWED_ORIGINS"] = "http://localhost:3000"
 os.environ["HEARTBEAT_CHECK_INTERVAL"] = "999999"
 os.environ["HEARTBEAT_ENABLED"] = "false"
+os.environ["REGISTRATION_INVITE_CODE"] = "test-invite-code-123"
+os.environ["RESEND_API_KEY"] = ""
+os.environ["EMAIL_VERIFICATION_TTL_HOURS"] = "24"
 # Use test RSA keys
 test_keys_dir = Path(__file__).parent.parent / "keys"
 os.environ["JWT_PRIVATE_KEY_PATH"] = str(test_keys_dir / "jwt_private.pem")
@@ -85,9 +88,14 @@ def auth(client):
     db = _TestSession()
     try:
         import uuid
+        from datetime import UTC, datetime
 
         email = f"test-{uuid.uuid4().hex[:8]}@example.com"
-        user = User(email=email, password_hash=hash_password("TestPass123!Long"))
+        user = User(
+            email=email,
+            password_hash=hash_password("TestPass123!Long"),
+            email_verified_at=datetime.now(UTC),
+        )
         db.add(user)
         db.commit()
         db.refresh(user)

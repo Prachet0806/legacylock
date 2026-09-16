@@ -121,6 +121,8 @@ class AccessStatusOut(BaseModel):
     vault_status: str
     vault_name: str
     share_index: int | None
+    recovery_threshold: int = 2
+    recovery_total: int = 3
     # No has_encrypted_share - backend doesn't store shares
 
 
@@ -341,6 +343,8 @@ def get_access_status(
         vault_status=vault_state,
         vault_name=vault.name,
         share_index=current_beneficiary.share_index,
+        recovery_threshold=int(getattr(vault, "recovery_threshold", None) or 2),
+        recovery_total=int(getattr(vault, "recovery_total", None) or 3),
     )
 
 

@@ -153,10 +153,13 @@ legacylock/
 ### Authentication
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/auth/login` | POST | Login (sets HttpOnly cookies) |
+| `/auth/register` | POST | Gated registration (invite code + Resend verification email, always 201) |
+| `/auth/verify-email` | POST | Redeem single-use verification link |
+| `/auth/resend-verification` | POST | Re-send verification link (always 200) |
+| `/auth/login` | POST | Login (sets HttpOnly cookies; 403 until email verified) |
 | `/auth/logout` | POST | Logout (clears cookies) |
 | `/auth/refresh` | POST | Rotate access token |
-| `/auth/me` | GET | Current user info |
+| `/auth/me` | GET | Current user info (incl. `email_verified`) |
 
 ### Vault
 | Route | Method | Purpose |
@@ -252,7 +255,9 @@ venv\Scripts\activate          # Windows
 # source venv/bin/activate     # macOS/Linux
 pip install -r requirements.txt
 
-# 5. Create your owner login (no signup endpoint by design — seed one user).
+# 5. Create your owner login — either seed one user directly, or set
+# REGISTRATION_INVITE_CODE in .env and sign up at http://localhost:3000/register
+# (verification email is mock-logged in dev without RESEND_API_KEY).
 # Tables are auto-created on first boot in development; no alembic step needed.
 venv\Scripts\python seed_dev_user.py owner@example.com   # Windows (prompts for password, 12+ chars)
 # python seed_dev_user.py owner@example.com              # macOS/Linux
@@ -367,7 +372,7 @@ npx playwright test            # needs `npx playwright install chromium` once + 
 - E2E tests (Playwright: crypto unit + page/redirect specs)
 
 ### 🔜 Planned (Phase 4+)
-- SendGrid/Twilio integration for real notifications
+- Twilio integration for real SMS (email via Resend is live; SMS still mock-logged)
 - Background job runner (Celery + Redis) for production heartbeat checker
 - Rate limiting on auth endpoints
 - Full audit logging on all mutations

@@ -22,6 +22,9 @@ from config import get_settings
 # which would merge unrelated buckets.
 _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
     "/auth/login": (5, 60),
+    "/auth/register": (3, 20),
+    "/auth/verify-email": (10, 100),
+    "/auth/resend-verification": (3, 20),
     "/auth/refresh": (10, 120),
     "/access/invite": (10, 100),
     "/access/session": (10, 100),

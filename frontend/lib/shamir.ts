@@ -1,10 +1,13 @@
-// Shamir 2-of-3 over GF(256) — client-side only. Never send raw shares to backend.
-// Share encoding: base64(x || 32 secret bytes), x in {1,2,3}.
+// Shamir k-of-n over GF(256) — client-side only. Never send raw shares to backend.
+// Share encoding: base64(x || 32 secret bytes), x in {1..n} (max 255).
 
 import { b64decode, b64encode, randomBytes } from "./crypto";
 
 export const SHAMIR_THRESHOLD = 2;
 export const SHAMIR_TOTAL = 3;
+export const DEFAULT_THRESHOLD = 2;
+export const DEFAULT_TOTAL = 3;
+export const MAX_SHARES = 10;
 
 // GF(256) with AES polynomial x^8 + x^4 + x^3 + x + 1 (0x11b).
 // NOTE: x (2) has multiplicative order 51, so tables must be built with
@@ -39,44 +42,85 @@ function gfDiv(a: number, b: number): number {
   return EXP[(LOG[a] - LOG[b] + 255) % 255];
 }
 
-/** Split 32-byte VMK into 3 shares (x=1,2,3). Each byte: y = s + a*x. */
-export function splitVMK(vmk: Uint8Array): string[] {
+function gfPow(a: number, e: number): number {
+  if (e === 0) return 1;
+  if (a === 0) return 0;
+  return EXP[(LOG[a] * e) % 255];
+}
+
+function validatePolicy(threshold: number, total: number): void {
+  if (
+    !Number.isInteger(threshold) ||
+    !Number.isInteger(total) ||
+    threshold < 1 ||
+    total < 1 ||
+    threshold > total ||
+    total > 255
+  ) {
+    throw new Error("Require 1 <= threshold <= total <= 255");
+  }
+}
+
+/** Split 32-byte VMK into n shares with threshold k (degree k-1 polynomial per byte). */
+export function splitVMK(
+  vmk: Uint8Array,
+  threshold: number = DEFAULT_THRESHOLD,
+  total: number = DEFAULT_TOTAL,
+): string[] {
   if (vmk.length !== 32) throw new Error("VMK must be 32 bytes");
-  const slopes = randomBytes(32);
+  validatePolicy(threshold, total);
+  // (k-1) random coefficients per byte.
+  const coeffs: Uint8Array[] = [];
+  for (let j = 0; j < threshold - 1; j++) coeffs.push(randomBytes(32));
   const shares: string[] = [];
-  for (let x = 1; x <= SHAMIR_TOTAL; x++) {
+  for (let x = 1; x <= total; x++) {
     const y = new Uint8Array(33);
     y[0] = x;
     for (let i = 0; i < 32; i++) {
-      y[i + 1] = gfAdd(vmk[i], gfMul(slopes[i], x));
+      let v = vmk[i];
+      for (let j = 0; j < coeffs.length; j++) {
+        v = gfAdd(v, gfMul(coeffs[j][i], gfPow(x, j + 1)));
+      }
+      y[i + 1] = v;
     }
     shares.push(b64encode(y));
   }
-  slopes.fill(0);
+  for (const c of coeffs) c.fill(0);
   return shares;
 }
 
-/** Reconstruct VMK from any 2+ shares via Lagrange interpolation at x=0. */
-export function reconstructVMK(shareB64s: string[]): Uint8Array {
-  if (shareB64s.length < SHAMIR_THRESHOLD) throw new Error("Need at least 2 shares");
-  const pts = shareB64s.slice(0, 3).map((s) => {
+/** Reconstruct VMK from any k shares via Lagrange interpolation at x=0. */
+export function reconstructVMK(
+  shareB64s: string[],
+  threshold: number = DEFAULT_THRESHOLD,
+): Uint8Array {
+  if (!Number.isInteger(threshold) || threshold < 1) throw new Error("Invalid threshold");
+  if (shareB64s.length < threshold) throw new Error(`Need at least ${threshold} shares`);
+  const pts = shareB64s.slice(0, threshold).map((s) => {
     const raw = b64decode(s);
     if (raw.length !== 33) throw new Error("Invalid share length");
     const x = raw[0];
-    if (x < 1 || x > 3) throw new Error("Invalid share index");
+    if (x < 1 || x > 255) throw new Error("Invalid share index");
     return { x, y: raw.slice(1) };
   });
   // Reject duplicate x.
   const xs = pts.map((p) => p.x);
   if (new Set(xs).size !== xs.length) throw new Error("Duplicate shares");
-  // Use first 2 distinct shares.
-  const [p1, p2] = pts;
   const out = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
-    // L1(0) = x2/(x2-x1), L2(0) = x1/(x1-x2) in GF(256); note subtraction = addition (XOR).
-    const l1 = gfDiv(p2.x, gfAdd(p2.x, p1.x));
-    const l2 = gfDiv(p1.x, gfAdd(p1.x, p2.x));
-    out[i] = gfAdd(gfMul(p1.y[i], l1), gfMul(p2.y[i], l2));
+    let acc = 0;
+    for (let j = 0; j < pts.length; j++) {
+      // L_j(0) = prod_{m != j} x_m / (x_m - x_j); subtraction = XOR in GF(256).
+      let num = 1;
+      let den = 1;
+      for (let m = 0; m < pts.length; m++) {
+        if (m === j) continue;
+        num = gfMul(num, pts[m].x);
+        den = gfMul(den, gfAdd(pts[m].x, pts[j].x));
+      }
+      acc = gfAdd(acc, gfMul(pts[j].y[i], gfDiv(num, den)));
+    }
+    out[i] = acc;
   }
   return out;
 }

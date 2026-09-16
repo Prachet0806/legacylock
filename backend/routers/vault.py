@@ -126,6 +126,20 @@ class CryptoMaterialRequest(BaseModel):
     vmk_kdf_algorithm: Literal["PBKDF2-SHA256"] = "PBKDF2-SHA256"
     vmk_kdf_salt: str = Field(..., min_length=1, max_length=10_000)
     vmk_kdf_parameters: dict
+    # Optional per-vault Shamir policy (k-of-n). When omitted, existing policy
+    # is preserved (legacy default 2-of-3).
+    recovery_threshold: int | None = Field(None, ge=1, le=10)
+    recovery_total: int | None = Field(None, ge=1, le=10)
+
+
+class RecoveryPolicyRequest(BaseModel):
+    recovery_threshold: int = Field(..., ge=1, le=10)
+    recovery_total: int = Field(..., ge=1, le=10)
+
+
+class RecoveryPolicyResponse(BaseModel):
+    recovery_threshold: int
+    recovery_total: int
 
 
 # Exact KDF contract per crypto version — clients may not negotiate weaker
@@ -397,6 +411,32 @@ def get_crypto_material(
     )
 
 
+def _validate_policy(k: int, n: int) -> None:
+    if k < 1 or k > n or n < 1 or n > 10:
+        raise HTTPException(
+            status_code=422, detail="require 1 <= recovery_threshold <= recovery_total <= 10"
+        )
+
+
+def _policy_of(vault: Vault) -> tuple[int, int]:
+    return int(vault.recovery_threshold or 2), int(vault.recovery_total or 3)
+
+
+def _ensure_policy_fits_assignments(db: Session, vault: Vault, n: int) -> None:
+    from models import Beneficiary as BeneficiaryModel
+
+    bad = (
+        db.query(BeneficiaryModel)
+        .filter(BeneficiaryModel.vault_id == vault.id, BeneficiaryModel.share_index > n)
+        .first()
+    )
+    if bad:
+        raise HTTPException(
+            status_code=409,
+            detail="recovery_total smaller than an assigned share_index; reassign first",
+        )
+
+
 @router.put("/crypto-material")
 def save_crypto_material(
     data: CryptoMaterialRequest,
@@ -444,6 +484,14 @@ def save_crypto_material(
     if salt_len != contract["salt_bytes"]:
         raise HTTPException(status_code=422, detail="KDF salt length mismatch for crypto version")
 
+    if data.recovery_threshold is not None or data.recovery_total is not None:
+        k = data.recovery_threshold if data.recovery_threshold is not None else _policy_of(vault)[0]
+        n = data.recovery_total if data.recovery_total is not None else _policy_of(vault)[1]
+        _validate_policy(k, n)
+        _ensure_policy_fits_assignments(db, vault, n)
+        vault.recovery_threshold = k
+        vault.recovery_total = n
+
     vault.wrapped_vmk = data.wrapped_vmk
     vault.vmk_crypto_version = data.vmk_crypto_version
     vault.vmk_kdf_algorithm = data.vmk_kdf_algorithm
@@ -459,6 +507,52 @@ def save_crypto_material(
         pass
 
     return {"message": "Crypto material saved successfully"}
+
+
+@router.get("/recovery-policy", response_model=RecoveryPolicyResponse)
+def get_recovery_policy(
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Return the vault's Shamir k-of-n policy (legacy default 2-of-3)."""
+    vault = _get_vault(db, current_user)
+    k, n = _policy_of(vault)
+    return RecoveryPolicyResponse(recovery_threshold=k, recovery_total=n)
+
+
+@router.put("/recovery-policy", response_model=RecoveryPolicyResponse)
+def put_recovery_policy(
+    data: RecoveryPolicyRequest,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Set the vault's Shamir k-of-n policy (creates vault if none exists).
+
+    Changing policy after shares were distributed invalidates old shares —
+    the owner must re-run setup (re-split) and redistribute.
+    """
+    vault = (
+        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
+    )
+    if not vault:
+        vault = Vault(user_id=current_user.id, name="Primary Vault", is_primary=True)
+        db.add(vault)
+        db.commit()
+        db.refresh(vault)
+    _validate_policy(data.recovery_threshold, data.recovery_total)
+    _ensure_policy_fits_assignments(db, vault, data.recovery_total)
+    vault.recovery_threshold = data.recovery_threshold
+    vault.recovery_total = data.recovery_total
+    vault.updated_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(vault)
+    try:
+        log_audit("vault.recovery_policy_save", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
+    return RecoveryPolicyResponse(
+        recovery_threshold=vault.recovery_threshold, recovery_total=vault.recovery_total
+    )
 
 
 class ShareAssignmentOut(BaseModel):

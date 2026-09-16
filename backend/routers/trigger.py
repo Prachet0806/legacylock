@@ -65,6 +65,8 @@ class VaultStatusOut(BaseModel):
     grace_started_at: str | None
     triggered_at: str | None
     updated_at: str
+    recovery_threshold: int = 2
+    recovery_total: int = 3
 
 
 class TriggerRequest(BaseModel):
@@ -105,6 +107,8 @@ def get_status(current_user: User = Depends(require_owner), db: Session = Depend
         grace_started_at=vs.grace_started_at.isoformat() if vs.grace_started_at else None,
         triggered_at=vs.triggered_at.isoformat() if vs.triggered_at else None,
         updated_at=vs.updated_at.isoformat() if vs.updated_at else "",
+        recovery_threshold=int(getattr(vault, "recovery_threshold", None) or 2),
+        recovery_total=int(getattr(vault, "recovery_total", None) or 3),
     )
 
 

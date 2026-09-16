@@ -1,7 +1,10 @@
-"""Authentication routes — login, logout, token refresh, current user."""
+"""Authentication routes — register, verify, login, logout, token refresh, me."""
+
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import get_settings
@@ -12,6 +15,7 @@ from services.auth import (
     RefreshReuseError,
     create_access_token,
     create_refresh_token,
+    hash_password,
     revoke_refresh_token_family,
     rotate_refresh_token,
     verify_password,
@@ -46,6 +50,25 @@ class UserResponse(BaseModel):
     id: int
     email: str
     created_at: str
+    email_verified: bool = False
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=12, max_length=256)
+    invite_code: str = Field(..., min_length=8, max_length=256)
+
+
+class RegisterResponse(BaseModel):
+    message: str = "If eligible, a verification email has been sent"
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(..., min_length=10, max_length=256)
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
 
 
 def _is_production() -> bool:
@@ -92,6 +115,96 @@ def clear_auth_cookies(response: Response, secure: bool = False) -> None:
     )
 
 
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    data: RegisterRequest,
+    db: Session = Depends(get_db),
+) -> RegisterResponse:
+    """Gated self-service registration (B-spec) + Resend verification.
+
+    Fail-closed when REGISTRATION_INVITE_CODE is empty. Invite is checked
+    first (constant-time) so outsiders learn nothing about email existence.
+    Always returns the same 201 message — enumeration-safe for new, existing
+    unverified (re-send), and existing verified (no-op) cases.
+    """
+    from services.email_verification import issue_verification
+
+    settings = get_settings()
+    expected = settings.registration_invite_code or ""
+    if not expected.strip() or not secrets.compare_digest(data.invite_code, expected):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid invitation",
+        )
+
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        user = User(email=email, password_hash=hash_password(data.password))
+        db.add(user)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            # Lost a concurrent race — fall through to the safe re-send path.
+            user = db.query(User).filter(User.email == email).first()
+            if user is None:
+                return RegisterResponse()
+        else:
+            db.refresh(user)
+            vault = Vault(user_id=user.id, name="Primary Vault", is_primary=True)
+            db.add(vault)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+            record_audit(db, None, "owner", user.id, "auth.register", {})
+            db.commit()
+            await issue_verification(db, user)
+            return RegisterResponse()
+
+    # Existing account: re-send verification if still unverified, else no-op.
+    # Same response either way — no enumeration oracle.
+    try:
+        if user.email_verified_at is None:
+            await issue_verification(db, user)
+    except Exception:
+        pass
+    return RegisterResponse()
+
+
+@router.post("/verify-email")
+def verify_email(
+    data: VerifyEmailRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Redeem a single-use verification token (generic error, no oracle)."""
+    from services.email_verification import consume_verification
+
+    user = consume_verification(db, data.token)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired link")
+    return {"message": "Email verified"}
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    data: ResendVerificationRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Re-send verification link. Always 200 — enumeration-safe."""
+    from services.email_verification import issue_verification
+
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if user is not None and user.email_verified_at is None:
+        try:
+            await issue_verification(db, user)
+        except Exception:
+            pass
+    return {"message": "If the account needs verification, an email has been sent"}
+
+
 @router.post("/login", response_model=LoginResponse)
 def login(
     data: LoginRequest,
@@ -99,7 +212,8 @@ def login(
     db: Session = Depends(get_db),
 ) -> LoginResponse:
     """Authenticate user. Refresh token is cookie-only (never in JSON)."""
-    user = db.query(User).filter(User.email == data.email).first()
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).first()
     if user is None:
         # Constant-time: burn the same Argon2id cost as a real check.
         verify_password(data.password, _DUMMY_HASH)
@@ -111,6 +225,13 @@ def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
+        )
+    if user.email_verified_at is None:
+        record_audit(db, None, "owner", user.id, "auth.login_blocked_unverified", {})
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified",
         )
 
     # Authentication has no domain side effects: vault provisioning happens
@@ -217,4 +338,5 @@ def me(user: User = Depends(require_owner)) -> UserResponse:
         id=user.id,
         email=user.email,
         created_at=user.created_at.isoformat() if user.created_at else "",
+        email_verified=user.email_verified_at is not None,
     )

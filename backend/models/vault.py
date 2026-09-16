@@ -16,6 +16,9 @@ class Vault(Base):
     # vault", never "whichever .first() happens to return".
     is_primary = Column(Boolean, nullable=False, default=True)
     wrapped_vmk = Column(Text, nullable=True)
+    # Per-vault Shamir recovery policy (k-of-n). Legacy rows default to 2-of-3.
+    recovery_threshold = Column(Integer, nullable=False, default=2, server_default="2")
+    recovery_total = Column(Integer, nullable=False, default=3, server_default="3")
     vmk_crypto_version = Column(Integer, nullable=True)
     vmk_kdf_algorithm = Column(String(50), nullable=True)
     vmk_kdf_salt = Column(Text, nullable=True)

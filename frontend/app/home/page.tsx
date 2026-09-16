@@ -33,7 +33,7 @@ const STEPS = [
   {
     icon: Users,
     title: "Recover",
-    hint: "Beneficiaries combine 2 of 3 Shamir shares to reconstruct the key and decrypt — locally.",
+    hint: "Beneficiaries combine k-of-n Shamir shares to reconstruct the key and decrypt — locally.",
   },
 ];
 
@@ -115,7 +115,7 @@ export default function Dashboard() {
         <div>
           <h2 className="font-semibold">Server-blind by design</h2>
           <p className="text-sm text-muted">
-            AES-256-GCM message encryption, PBKDF2 key wrapping, and Shamir 2-of-3 recovery —
+            AES-256-GCM message encryption, PBKDF2 key wrapping, and Shamir threshold recovery —
             all computed in your browser via WebCrypto. Plaintext, passphrases, and raw shares
             are never transmitted or logged.
           </p>

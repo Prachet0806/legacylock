@@ -27,8 +27,9 @@ export default function RecoveryPage() {
   const [step, setStep] = useState(1);
   const [gate, setGate] = useState<string>("checking…");
   const [gateOk, setGateOk] = useState(false);
-  const [s1, setS1] = useState("");
-  const [s2, setS2] = useState("");
+  const [threshold, setThreshold] = useState(2);
+  const [total, setTotal] = useState(3);
+  const [shareInputs, setShareInputs] = useState<string[]>(["", ""]);
   const [vmk, setVmk] = useState<Uint8Array | null>(null);
   const [messages, setMessages] = useState<RecoveryMessageMeta[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -44,6 +45,11 @@ export default function RecoveryPage() {
         const s = await getAccessStatus();
         setGate(`${s.vault_name} — ${s.vault_status}`);
         setGateOk(s.vault_status === "triggered");
+        const k = s.recovery_threshold ?? 2;
+        const n = s.recovery_total ?? 3;
+        setThreshold(k);
+        setTotal(n);
+        setShareInputs(Array.from({ length: k }, () => ""));
       } catch (e) {
         setGate(e instanceof Error ? e.message : "status check failed");
       }
@@ -60,11 +66,10 @@ export default function RecoveryPage() {
     setErr("");
     setBusy(true);
     try {
-      const a = s1.trim();
-      const b = s2.trim();
-      if (!a || !b) throw new Error("Enter two shares.");
+      const inputs = shareInputs.map((s) => s.trim()).filter(Boolean);
+      if (inputs.length < threshold) throw new Error(`Enter ${threshold} shares.`);
       // Reconstruct locally only — shares never leave this tab in any form.
-      const raw = reconstructVMK([a, b]);
+      const raw = reconstructVMK(inputs.slice(0, threshold), threshold);
       setVmk(raw);
       setFailures(0);
       setMessages(await listRecoveryMessages());
@@ -154,27 +159,38 @@ export default function RecoveryPage() {
         <div className="card flex flex-col gap-3">
           <h2 className="flex items-center gap-2 font-semibold">
             <Ticket className="h-4 w-4 text-accent" />
-            2. Enter 2 of your 3 shares
+            2. Enter {threshold} of your {total} shares
           </h2>
           <p className="text-sm text-muted">
             Paste the shares distributed to you out-of-band. They never leave
             this tab in any form — reconstruction happens locally.
           </p>
-          <div>
-            <label className="label" htmlFor="share-a">Share A</label>
-            <textarea id="share-a" className="input font-mono text-xs" rows={3} value={s1} onChange={(e) => setS1(e.target.value)} />
-          </div>
-          <div>
-            <label className="label" htmlFor="share-b">Share B</label>
-            <textarea id="share-b" className="input font-mono text-xs" rows={3} value={s2} onChange={(e) => setS2(e.target.value)} />
-          </div>
+          {shareInputs.map((val, i) => (
+            <div key={i}>
+              <label className="label" htmlFor={`share-${i}`}>Share {i + 1}</label>
+              <textarea
+                id={`share-${i}`}
+                className="input font-mono text-xs"
+                rows={3}
+                value={val}
+                onChange={(e) =>
+                  setShareInputs((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))
+                }
+              />
+            </div>
+          ))}
           {err && <p role="alert" className="text-sm text-danger">{err}</p>}
           <div className="flex justify-between">
             <button type="button" className="btn-ghost text-sm" disabled={busy} onClick={() => setStep(1)}>
               <ArrowLeft className="h-4 w-4" />
               Back
             </button>
-            <button type="button" className="btn-primary text-sm" disabled={busy || !s1.trim() || !s2.trim()} onClick={onSharesContinue}>
+            <button
+              type="button"
+              className="btn-primary text-sm"
+              disabled={busy || shareInputs.filter((s) => s.trim()).length < threshold}
+              onClick={onSharesContinue}
+            >
               {busy && <Spinner />}
               Submit shares
               <ArrowRight className="h-4 w-4" />

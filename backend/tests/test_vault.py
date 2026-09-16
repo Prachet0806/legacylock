@@ -203,7 +203,13 @@ class TestVaultCRUD:
         email = f"fresh-{uuid.uuid4().hex[:8]}@example.com"
         db = SessionLocal()
         try:
-            user = User(email=email, password_hash=hash_password("TestPass123!Long"))
+            from datetime import UTC, datetime
+
+            user = User(
+                email=email,
+                password_hash=hash_password("TestPass123!Long"),
+                email_verified_at=datetime.now(UTC),
+            )
             db.add(user)
             db.commit()
             db.refresh(user)

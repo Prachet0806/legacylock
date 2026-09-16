@@ -24,18 +24,21 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 
 
+MAX_SHARE_INDEX = 255  # GF(256) x-coord range; per-vault total caps further.
+
+# Accepts the GF(256) range here; routes enforce 1 <= idx <= vault.recovery_total.
 class BeneficiaryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     email: EmailStr = Field(..., max_length=320)
     phone: str | None = Field(None, max_length=30)
-    share_index: int | None = Field(None, ge=1, le=3)
+    share_index: int | None = Field(None, ge=1, le=MAX_SHARE_INDEX)
 
 
 class BeneficiaryUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     email: EmailStr | None = Field(None, max_length=320)
     phone: str | None = Field(None, max_length=30)
-    share_index: int | None = Field(None, ge=1, le=3)
+    share_index: int | None = Field(None, ge=1, le=MAX_SHARE_INDEX)
 
 
 class BeneficiaryOut(BaseModel):
@@ -70,6 +73,21 @@ def _get_vault(db: Session, current_user: User) -> Vault:
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")
     return vault
+
+
+def _policy(vault: Vault) -> tuple[int, int]:
+    """Return (threshold, total) with legacy 2-of-3 fallback for old rows."""
+    k = getattr(vault, "recovery_threshold", None) or 2
+    n = getattr(vault, "recovery_total", None) or 3
+    return int(k), int(n)
+
+
+def _check_share_in_range(vault: Vault, idx: int) -> None:
+    _, n = _policy(vault)
+    if idx < 1 or idx > n:
+        raise HTTPException(
+            status_code=422, detail=f"share_index must be between 1 and {n}"
+        )
 
 
 def _generate_invitation_hash() -> str:
@@ -128,6 +146,8 @@ def add_beneficiary(
     if existing:
         raise HTTPException(status_code=409, detail="Beneficiary with this email already exists")
 
+    if data.share_index is not None:
+        _check_share_in_range(vault, data.share_index)
     entry = Beneficiary(
         vault_id=vault.id,
         name=data.name,
@@ -273,6 +293,7 @@ def update_beneficiary(
     if data.phone is not None:
         beneficiary.phone = data.phone
     if data.share_index is not None:
+        _check_share_in_range(vault, data.share_index)
         clash = (
             db.query(Beneficiary)
             .filter(
@@ -306,7 +327,7 @@ def update_beneficiary(
 
 
 class ShareAssignRequest(BaseModel):
-    share_index: int = Field(..., ge=1, le=3)
+    share_index: int = Field(..., ge=1, le=MAX_SHARE_INDEX)
 
 
 @router.post("/{beneficiary_id}/assign-share")
@@ -318,6 +339,7 @@ def assign_share(
 ):
     """Assign a Shamir share index (metadata only, never raw share values)."""
     vault = _get_vault(db, current_user)
+    _check_share_in_range(vault, data.share_index)
     beneficiary = (
         db.query(Beneficiary)
         .filter(

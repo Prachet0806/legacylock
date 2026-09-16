@@ -5,6 +5,7 @@ import { ownerFetch } from "./transport";
 export interface MeOut {
   id: number;
   email: string;
+  email_verified?: boolean;
 }
 export const getMe = () => ownerFetch<MeOut>("/auth/me");
 export const logout = () =>
@@ -65,7 +66,18 @@ export const putCryptoMaterial = (body: {
   vmk_kdf_algorithm: "PBKDF2-SHA256";
   vmk_kdf_salt: string;
   vmk_kdf_parameters: { iterations: number };
+  recovery_threshold?: number;
+  recovery_total?: number;
 }) => ownerFetch<{ message: string }>("/vault/crypto-material", { method: "PUT", body: JSON.stringify(body) });
+
+// --- recovery policy (per-vault Shamir k-of-n) ---
+export interface RecoveryPolicy {
+  recovery_threshold: number;
+  recovery_total: number;
+}
+export const getRecoveryPolicy = () => ownerFetch<RecoveryPolicy>("/vault/recovery-policy");
+export const putRecoveryPolicy = (body: { recovery_threshold: number; recovery_total: number }) =>
+  ownerFetch<RecoveryPolicy>("/vault/recovery-policy", { method: "PUT", body: JSON.stringify(body) });
 
 // --- vault status / trigger ---
 export interface VaultStatus {
@@ -73,6 +85,8 @@ export interface VaultStatus {
   grace_started_at: string | null;
   triggered_at: string | null;
   updated_at: string;
+  recovery_threshold?: number;
+  recovery_total?: number;
 }
 export const getVaultStatus = () => ownerFetch<VaultStatus>("/vault/status");
 export const manualTrigger = (password: string, confirm: true) =>

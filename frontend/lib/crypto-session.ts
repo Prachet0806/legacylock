@@ -56,9 +56,11 @@ function adopt(raw: Uint8Array): void {
 /** Set up a fresh vault: generate VMK, return wrapped material + shares. */
 export async function setupVault(
   passphrase: string,
+  threshold: number = 2,
+  total: number = 3,
 ): Promise<{ material: WrappedVmkMaterial; shares: string[] }> {
   const { vmk: raw, material } = await createWrappedVmk(passphrase);
-  const shares = splitVMK(raw);
+  const shares = splitVMK(raw, threshold, total);
   adopt(raw);
   return { material, shares };
 }

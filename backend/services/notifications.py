@@ -1,25 +1,32 @@
 """Notification service — email and SMS dispatch.
 
-Uses SendGrid for email and Twilio for SMS.
+Uses Resend for email and Twilio for SMS.
 Falls back to logging when credentials are not configured.
 """
 
+import html as _html
 import logging
 
 logger = logging.getLogger("legacylock.notifications")
 
 # ---------------------------------------------------------------------------
-# Email — SendGrid (config read lazily via _email_config for testability)
+# Email — Resend (config read lazily via _email_config for testability)
 # ---------------------------------------------------------------------------
 
 
 def _email_config() -> tuple[str, str]:
-    import os as _os
+    try:
+        from config import get_settings
 
-    return (
-        _os.environ.get("SENDGRID_API_KEY", ""),
-        _os.environ.get("NOTIFICATION_EMAIL_FROM", "noreply@legacylock.app"),
-    )
+        settings = get_settings()
+        return (settings.resend_api_key or "", settings.notification_email_from)
+    except Exception:
+        import os as _os
+
+        return (
+            _os.environ.get("RESEND_API_KEY", ""),
+            _os.environ.get("NOTIFICATION_EMAIL_FROM", "noreply@legacylock.app"),
+        )
 
 
 def _redact(value: str) -> str:
@@ -31,8 +38,8 @@ def _redact(value: str) -> str:
     return "***"
 
 
-async def send_email(to: str, subject: str, body: str) -> bool:
-    """Send an email. Returns True on success."""
+async def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> bool:
+    """Send an email via Resend. Returns True on success."""
     api_key, email_from = _email_config()
     if not api_key:
         logger.info("[MOCK EMAIL] to=%s subject=%s", _redact(to), subject)
@@ -41,25 +48,27 @@ async def send_email(to: str, subject: str, body: str) -> bool:
     try:
         import httpx
 
-        async with httpx.AsyncClient() as client:
+        payload: dict = {
+            "from": email_from,
+            "to": [to],
+            "subject": subject,
+            "text": body,
+            "html": html_body if html_body is not None else f"<pre>{_html.escape(body)}</pre>",
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
             res = await client.post(
-                "https://api.sendgrid.com/v3/mail/send",
+                "https://api.resend.com/emails",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "personalizations": [{"to": [{"email": to}]}],
-                    "from": {"email": email_from},
-                    "subject": subject,
-                    "content": [{"type": "text/plain", "value": body}],
-                },
+                json=payload,
             )
-        if res.status_code in (200, 202):
+        if res.status_code in (200, 201, 202):
             logger.info("Email sent subject=%s", subject)
             return True
         else:
-            logger.error("SendGrid error %s", res.status_code)
+            logger.error("Resend error %s", res.status_code)
             return False
     except Exception:
         logger.exception("Failed to send email")

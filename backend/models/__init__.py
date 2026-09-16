@@ -1,5 +1,6 @@
 from .audit import AuditEvent
 from .beneficiary import Beneficiary
+from .email_verification import EmailVerificationToken
 from .heartbeat import HeartbeatConfig
 from .message import MessageCategory, VaultMessage
 from .notification import NotificationLog

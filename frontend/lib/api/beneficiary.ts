@@ -10,9 +10,13 @@ export const getInviteStatus = (hash: string) =>
     `/access/invite/${hash}/status`,
   );
 export const getAccessStatus = () =>
-  beneficiaryFetch<{ vault_status: string; vault_name: string; share_index: number | null }>(
-    "/access/status",
-  );
+  beneficiaryFetch<{
+    vault_status: string;
+    vault_name: string;
+    share_index: number | null;
+    recovery_threshold: number;
+    recovery_total: number;
+  }>("/access/status");
 export interface RecoveryMessageMeta {
   id: number;
   label: string;

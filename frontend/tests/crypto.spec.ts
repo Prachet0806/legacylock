@@ -31,6 +31,25 @@ test("shamir any-2-of-3 reconstructs", async () => {
   }
 });
 
+test("shamir k-of-n roundtrips (2-of-2, 3-of-5, 2-of-5)", async () => {
+  for (const [k, n] of [[2, 2], [1, 1], [3, 5], [2, 5], [5, 5]] as const) {
+    const vmk = generateVMK();
+    const shares = splitVMK(vmk, k, n);
+    expect(shares).toHaveLength(n);
+    // First k reconstruct; a different k-subset also reconstructs when n > k.
+    expect(Buffer.from(reconstructVMK(shares.slice(0, k), k))).toEqual(Buffer.from(vmk));
+    if (n > k) {
+      expect(Buffer.from(reconstructVMK(shares.slice(n - k), k))).toEqual(Buffer.from(vmk));
+    }
+  }
+});
+
+test("shamir below-threshold fails", async () => {
+  const vmk = generateVMK();
+  const shares = splitVMK(vmk, 3, 5);
+  expect(() => reconstructVMK(shares.slice(0, 2), 3)).toThrow();
+});
+
 test("shamir single share fails", async () => {
   const vmk = generateVMK();
   const shares = splitVMK(vmk);
