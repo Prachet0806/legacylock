@@ -1,42 +1,38 @@
 import { test, expect } from "@playwright/test";
 
-// Zero-knowledge golden path: owner encrypts -> beneficiary recovers after
-// trigger — AND the network boundary holds throughout: no request body may
-// carry the vault passphrase, raw shares, or message plaintext (the login
-// password travels only to its three auth endpoints, by design over TLS).
+// Automatic dead-man-switch path: owner configures heartbeat -> simulated
+// inactivity (non-prod run-check time travel) drives ACTIVE -> GRACE ->
+// TRIGGERED with reason=inactivity -> beneficiary recovers, proving the
+// automatic release is equivalent to the manual one. No request body may
+// carry the vault passphrase, raw shares, or message plaintext.
 // Requires a live backend (NEXT_PUBLIC_API_URL, default :8000) with a seeded
-// owner (E2E_OWNER_EMAIL/PASSWORD). Skips cleanly when unavailable, so plain
-// `npx playwright test` stays green without a backend.
+// owner (E2E_OWNER_EMAIL/PASSWORD). Skips cleanly when unavailable.
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const OWNER_EMAIL = process.env.E2E_OWNER_EMAIL ?? "owner@example.com";
 const OWNER_PASSWORD = process.env.E2E_OWNER_PASSWORD ?? "DevPassword123456";
-const VAULT_PASSPHRASE = "E2E-Vault-Passphrase-12345";
+const VAULT_PASSPHRASE = "E2E-Auto-Passphrase-12345";
 
 test.beforeAll(async ({ request }) => {
   const health = await request.get(`${API}/health`).catch(() => null);
-  test.skip(!health || !health.ok(), "golden path needs a live backend");
+  test.skip(!health || !health.ok(), "auto-trigger path needs a live backend");
   const login = await request
     .post(`${API}/auth/login`, { data: { email: OWNER_EMAIL, password: OWNER_PASSWORD } })
     .catch(() => null);
-  test.skip(!login || !login.ok(), "golden path needs a seeded owner (seed_dev_user.py)");
+  test.skip(!login || !login.ok(), "auto-trigger path needs a seeded owner (seed_dev_user.py)");
 });
 
-test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
+test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> recovery", async ({
   page,
   context,
   request,
 }) => {
   test.setTimeout(240000);
-  const STAMP = Date.now();
-  const MESSAGES = [1, 2, 3].map((i) => ({
-    label: `Golden Secret ${i} ${STAMP}`,
-    body: `The golden plaintext ${i} ${STAMP}`,
-  }));
-  const BEN_NAME = `E2E Ben ${Date.now()}`;
-  const BEN_EMAIL = `e2e-ben-${Date.now()}@example.com`;
+  const BODY = `The auto plaintext ${Date.now()}`;
+  const LABEL = `Auto Secret ${Date.now()}`;
+  const BEN_NAME = `E2E Auto Ben ${Date.now()}`;
+  const BEN_EMAIL = `e2e-auto-ben-${Date.now()}@example.com`;
 
   // Reset to ACTIVE first so reruns against a used DB still work.
-  // Cookie flow: login sets HttpOnly cookies on the shared request context.
   await request.post(`${API}/auth/login`, {
     data: { email: OWNER_EMAIL, password: OWNER_PASSWORD },
   });
@@ -44,7 +40,6 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
     data: { password: OWNER_PASSWORD, confirm: true },
   });
 
-  // Capture every request body on both sessions for the boundary assertion.
   const bodies: Array<{ url: string; body: string }> = [];
   const tap = (p: typeof page) =>
     p.on("request", (req) => {
@@ -61,7 +56,7 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   await page.getByRole("button", { name: "Log in" }).click();
   await expect(page).toHaveURL(/\/home$/);
 
-  // --- Owner: vault setup, capture the 3 shares ---
+  // --- Owner: vault setup, capture 3 shares (default 2-of-3) ---
   await page.goto("/vault/setup");
   // Step 1 is Policy (defaults 2-of-3) -> Continue to the passphrase step.
   await page.getByRole("button", { name: "Continue" }).click();
@@ -82,23 +77,26 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   await page.getByRole("button", { name: /finish/i }).click();
   await expect(page).toHaveURL(/\/vault$/);
 
-  // --- Owner: already unlocked post-setup; create three encrypted messages ---
+  // --- Owner: one encrypted message ---
   await expect(page.getByRole("button", { name: "New message" })).toBeVisible();
-  for (const m of MESSAGES) {
-    await page.getByRole("button", { name: "New message" }).click();
-    await page.getByLabel("Label").fill(m.label);
-    await page.getByLabel("Secret text").fill(m.body);
-    await page.getByRole("button", { name: "Encrypt and save" }).click();
-    await expect(page.getByText(m.label)).toBeVisible();
-  }
+  await page.getByRole("button", { name: "New message" }).click();
+  await page.getByLabel("Label").fill(LABEL);
+  await page.getByLabel("Secret text").fill(BODY);
+  await page.getByRole("button", { name: "Encrypt and save" }).click();
+  await expect(page.getByText(LABEL)).toBeVisible();
 
-  // --- Owner: reload (VMK is memory-only) -> unlock from scratch ---
-  await page.reload();
-  await page.getByLabel("Vault passphrase").fill(VAULT_PASSPHRASE);
-  await page.getByRole("button", { name: "Unlock" }).click();
-  for (const m of MESSAGES) await expect(page.getByText(m.label)).toBeVisible();
+  // --- Owner: heartbeat 30/7 via UI, check in ---
+  await page.goto("/heartbeat");
+  await page.getByLabel("Check-in every (days)").fill("30");
+  await page.getByLabel("Grace period (days)").fill("7");
+  await page.getByRole("button", { name: "Save schedule" }).click();
+  await expect(page.getByText("Currently: every 30 days, 7 days grace.")).toBeVisible({
+    timeout: 15000,
+  });
+  await page.getByRole("button", { name: "Check in now" }).click();
+  await expect(page.getByText("ACTIVE").first()).toBeVisible({ timeout: 15000 });
 
-  // --- Owner: add + invite beneficiary, capture the link ---
+  // --- Owner: add + invite beneficiary BEFORE the trigger ---
   await page.goto("/beneficiaries");
   await page.getByLabel("Name").fill(BEN_NAME);
   await page.getByLabel("Email").fill(BEN_EMAIL);
@@ -110,15 +108,39 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   const link = (await linkEl.textContent())?.trim() ?? "";
   expect(link).toContain("/access/invite/");
 
-  // --- Owner: manual trigger ---
+  // --- Time travel +31d: ACTIVE -> GRACE ---
+  const grace = await request.post(`${API}/heartbeat/run-check`, {
+    data: { advance_days: 31 },
+  });
+  expect(grace.ok()).toBe(true);
+  expect(await grace.json().then((b) => b.actions.join(","))).toContain("grace_started");
   await page.goto("/heartbeat");
-  await page.getByRole("button", { name: /trigger vault/i }).click();
-  await page.getByLabel("Login password").fill(OWNER_PASSWORD);
-  await page.getByRole("checkbox", { name: /releases beneficiary access/i }).check();
-  await page.getByRole("button", { name: "Trigger now" }).click();
-  await expect(page.getByText(/triggered/i).first()).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText("GRACE").first()).toBeVisible({ timeout: 15000 });
 
-  // --- Beneficiary: accept invite (isolated storage, no owner session) ---
+  // --- Check-in cancels grace -> ACTIVE ---
+  await page.getByRole("button", { name: "Check in now" }).click();
+  await expect(page.getByText("ACTIVE").first()).toBeVisible({ timeout: 15000 });
+
+  // --- Time travel +31d then +40d: GRACE -> TRIGGERED (inactivity) ---
+  const grace2 = await request.post(`${API}/heartbeat/run-check`, {
+    data: { advance_days: 31 },
+  });
+  expect(await grace2.json().then((b) => b.actions.join(","))).toContain("grace_started");
+  const trig = await request.post(`${API}/heartbeat/run-check`, {
+    data: { advance_days: 40 },
+  });
+  expect(trig.ok()).toBe(true);
+  expect(await trig.json().then((b) => b.actions.join(","))).toContain("triggered");
+  await page.goto("/heartbeat");
+  await expect(page.getByText("TRIGGERED").first()).toBeVisible({ timeout: 15000 });
+
+  // --- Idempotent re-run: still triggered, no new actions ---
+  const again = await request.post(`${API}/heartbeat/run-check`, {
+    data: { advance_days: 40 },
+  });
+  expect(await again.json().then((b) => b.actions)).toEqual([]);
+
+  // --- Beneficiary: accept invite, gate shows triggered, recover ---
   const benCtx = await context.browser()?.newContext();
   test.skip(!benCtx, "no browser for beneficiary context");
   const ben = await benCtx!.newPage();
@@ -127,22 +149,18 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   await ben.getByRole("button", { name: "Accept invitation" }).click();
   await expect(ben.getByText(/accepted/i).first()).toBeVisible();
   await ben.goto("/recovery");
-
-  // --- Beneficiary: gate -> shares -> decrypt, plaintext must match ---
   await expect(ben.getByText(/triggered/i).first()).toBeVisible({ timeout: 15000 });
   await ben.getByRole("button", { name: "Continue" }).click();
   await ben.getByLabel("Share 1").fill(shares[0]);
   await ben.getByLabel("Share 2").fill(shares[1]);
   await ben.getByRole("button", { name: "Submit shares" }).click();
-  for (const m of MESSAGES) {
-    const msgRow = ben.locator("li", { hasText: m.label });
-    await expect(msgRow).toBeVisible({ timeout: 15000 });
-    await msgRow.getByRole("button", { name: "Decrypt" }).click();
-    await expect(ben.getByText(m.body)).toBeVisible({ timeout: 15000 });
-  }
+  const msgRow = ben.locator("li", { hasText: LABEL });
+  await expect(msgRow).toBeVisible({ timeout: 15000 });
+  await msgRow.getByRole("button", { name: "Decrypt" }).click();
+  await expect(ben.getByText(BODY)).toBeVisible({ timeout: 15000 });
 
   // --- Boundary assertion: forbidden material in NO request body ---
-  const forbidden = [...shares, VAULT_PASSPHRASE, ...MESSAGES.map((m) => m.body)];
+  const forbidden = [...shares, VAULT_PASSPHRASE, BODY];
   const passwordEndpoints = ["/auth/login", "/vault/trigger", "/vault/reset-status"];
   expect(bodies.length).toBeGreaterThan(0);
   for (const { url, body } of bodies) {

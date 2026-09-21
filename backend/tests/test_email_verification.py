@@ -226,3 +226,50 @@ def _bearer(client, email):
     finally:
         db.close()
     return {"Authorization": f"Bearer {token}"}
+
+
+class TestIssueVerificationEndpoint:
+    def _register(self, client, email):
+        res = client.post(
+            "/auth/register",
+            json={
+                "email": email,
+                "password": "VerifyPass123!Long",
+                "invite_code": "test-invite-code-123",
+            },
+        )
+        assert res.status_code == 201
+
+    def test_returns_verifiable_link(self, client):
+        import uuid
+
+        email = f"t-{uuid.uuid4().hex[:8]}@example.com"
+        self._register(client, email)
+        res = client.post("/auth/test-issue-verification", json={"email": email})
+        assert res.status_code == 200
+        link = res.json()["link"]
+        assert "/verify-email?token=" in link
+        raw = link.split("token=")[1]
+        assert client.post("/auth/verify-email", json={"token": raw}).status_code == 200
+
+    def test_unknown_email_404(self, client):
+        res = client.post("/auth/test-issue-verification", json={"email": "ghost@example.com"})
+        assert res.status_code == 404
+
+    def test_verified_account_404(self, client):
+        email, raw = _make_unverified(client)
+        assert client.post("/auth/verify-email", json={"token": raw}).status_code == 200
+        res = client.post("/auth/test-issue-verification", json={"email": email})
+        assert res.status_code == 404
+
+    def test_resend_cooldown_stays_generic(self, client):
+        import uuid
+
+        email = f"c-{uuid.uuid4().hex[:8]}@example.com"
+        self._register(client, email)
+        # Immediate resend hits the per-email cooldown but stays generic-200.
+        res = client.post("/auth/resend-verification", json={"email": email})
+        assert res.status_code == 200
+        assert res.json() == {
+            "message": "If the account needs verification, an email has been sent"
+        }

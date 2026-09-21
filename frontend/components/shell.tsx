@@ -43,7 +43,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<string>("active");
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const isPublic = pathname === "/" || pathname?.startsWith(PUBLIC_ACCESS_PREFIX);
+  // /register + /verify-email must stay public: logged-out newcomers can only
+  // create and verify accounts from outside any session.
+  const isPublic =
+    pathname === "/" ||
+    pathname === "/register" ||
+    pathname === "/verify-email" ||
+    pathname?.startsWith(PUBLIC_ACCESS_PREFIX);
   // Explicit principal detection — no guessing from storage:
   // - owner session (GET /auth/me) admits every app route,
   // - beneficiary session (GET /access/status) admits /recovery only,

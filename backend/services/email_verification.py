@@ -33,13 +33,40 @@ def verification_link(raw: str) -> str:
     return f"{origin}/verify-email?token={raw}"
 
 
-async def issue_verification(db: Session, user: User) -> str:
+_RESEND_COOLDOWN = timedelta(minutes=5)
+
+
+class VerificationCooldown(Exception):
+    """Raised when a resend arrives inside the per-email cooldown window."""
+
+
+async def issue_verification(
+    db: Session, user: User, enforce_cooldown: bool = False
+) -> str:
     """Create a fresh single-use token for user, email the link, return raw.
 
     Prior unconsumed tokens are revoked so only the newest link works.
+    With enforce_cooldown=True (public resend endpoint only), a re-issue
+    inside the 5-minute per-email window raises VerificationCooldown instead
+    of sending mail — supplementing IP rate limits against email spam.
+    Registration-time issuance never enforces the cooldown.
     Email-send failure is logged, not raised — the user can resend.
     """
     from services.notifications import send_email
+
+    if enforce_cooldown:
+        latest = (
+            db.query(EmailVerificationToken)
+            .filter(EmailVerificationToken.user_id == user.id)
+            .order_by(EmailVerificationToken.created_at.desc())
+            .first()
+        )
+        if latest is not None and latest.consumed_at is None:
+            created = latest.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if datetime.now(UTC) - created < _RESEND_COOLDOWN:
+                raise VerificationCooldown("Verification email cooldown active")
 
     # Single-active: drop stale unconsumed tokens.
     db.query(EmailVerificationToken).filter(
@@ -81,27 +108,45 @@ async def issue_verification(db: Session, user: User) -> str:
 
 
 def consume_verification(db: Session, raw: str) -> User | None:
-    """Redeem a raw token. Returns the user on success, None if invalid/expired/used."""
+    """Redeem a raw token. Returns the user on success, None if invalid/expired/used.
+
+    Atomic single-use: the conditional UPDATE only flips unconsumed rows, so
+    concurrent redemptions cannot both succeed. Expiry is checked in Python
+    (SQLite stores naive datetimes; comparing against aware `now()` in SQL
+    would misbehave) — an expired token is still burned, which preserves the
+    single-use promise.
+    """
     if not raw or len(raw) > 256:
+        return None
+    now = datetime.now(UTC)
+    flipped = (
+        db.query(EmailVerificationToken)
+        .filter(
+            EmailVerificationToken.token_hash == hash_token(raw),
+            EmailVerificationToken.consumed_at.is_(None),
+        )
+        .update({EmailVerificationToken.consumed_at: now}, synchronize_session=False)
+    )
+    db.commit()
+    if not flipped:
         return None
     row = (
         db.query(EmailVerificationToken)
         .filter(EmailVerificationToken.token_hash == hash_token(raw))
         .first()
     )
-    if row is None or row.consumed_at is not None:
+    if row is None:
         return None
     expires = row.expires_at
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=UTC)
-    if expires <= datetime.now(UTC):
+    if expires <= now:
         return None
     user = db.query(User).filter(User.id == row.user_id).first()
     if user is None:
         return None
-    row.consumed_at = datetime.now(UTC)
-    user.email_verified_at = datetime.now(UTC)
-    user.updated_at = datetime.now(UTC)
+    user.email_verified_at = now
+    user.updated_at = now
     record_audit(db, None, "owner", user.id, "auth.verified", {})
     db.commit()
     db.refresh(user)

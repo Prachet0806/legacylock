@@ -15,7 +15,13 @@ import {
   type EncryptedMessagePayload,
   type WrappedVmkMaterial,
 } from "./crypto";
-import { splitVMK } from "./shamir";
+import { newRecoveryGeneration, splitVMK } from "./shamir";
+
+/** Recovery ceremony state: generation binds policy metadata to the share set. */
+let activeGeneration: string | null = null;
+export function getActiveGeneration(): string | null {
+  return activeGeneration;
+}
 
 let vmk: Uint8Array | null = null;
 const listeners = new Set<() => void>();
@@ -53,16 +59,18 @@ function adopt(raw: Uint8Array): void {
   notify();
 }
 
-/** Set up a fresh vault: generate VMK, return wrapped material + shares. */
+/** Set up a fresh vault: generate VMK + ceremony generation, return all. */
 export async function setupVault(
   passphrase: string,
   threshold: number = 2,
   total: number = 3,
-): Promise<{ material: WrappedVmkMaterial; shares: string[] }> {
+): Promise<{ material: WrappedVmkMaterial; shares: string[]; generation: string }> {
   const { vmk: raw, material } = await createWrappedVmk(passphrase);
-  const shares = splitVMK(raw, threshold, total);
+  const generation = newRecoveryGeneration();
+  const shares = splitVMK(raw, threshold, total, generation);
+  activeGeneration = generation;
   adopt(raw);
-  return { material, shares };
+  return { material, shares, generation };
 }
 
 /** Unlock an existing vault from server-provided wrapped material. */

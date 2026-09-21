@@ -16,7 +16,8 @@ import {
 } from "lucide-react";
 import { clsx } from "clsx";
 import { CRYPTO_VERSION, setupVault } from "../../../lib/crypto-session";
-import { putCryptoMaterial } from "../../../lib/client";
+import { parseShare } from "../../../lib/shamir";
+import { postRecoveryCeremony, putCryptoMaterial } from "../../../lib/client";
 import { CopyButton, Spinner } from "../../../components/ui";
 import { useToast } from "../../../components/toast";
 
@@ -61,7 +62,11 @@ export default function VaultSetupPage() {
     setErr("");
     setBusy(true);
     try {
-      const { material, shares: freshShares } = await setupVault(passphrase, threshold, total);
+      const { material, shares: freshShares, generation } = await setupVault(
+        passphrase,
+        threshold,
+        total,
+      );
       await putCryptoMaterial({
         wrapped_vmk: material.wrapped_vmk_b64,
         vmk_crypto_version: CRYPTO_VERSION,
@@ -70,7 +75,14 @@ export default function VaultSetupPage() {
         vmk_kdf_parameters: material.vmk_kdf_parameters,
         recovery_threshold: threshold,
         recovery_total: total,
+        recovery_generation: generation,
       });
+      // Commit the ceremony binding (generation + policy). Server stores no shares.
+      await postRecoveryCeremony({
+        recovery_threshold: threshold,
+        recovery_total: total,
+        recovery_generation: generation,
+      }).catch(() => undefined);
       setShares(freshShares);
       setStored(freshShares.map(() => false));
       // The passphrase has served its purpose (KEK derived + VMK wrapped);
@@ -87,8 +99,14 @@ export default function VaultSetupPage() {
   }
 
   function downloadShares() {
+    let generation = "";
+    try {
+      generation = shares.length ? parseShare(shares[0]).generation : "";
+    } catch {
+      generation = "";
+    }
     const blob = new Blob(
-      [[`LegacyLock recovery shares (${threshold} of ${total} required)\nStored: ${new Date().toISOString()}\n\n`, ...shares.map((s, i) => `Share ${i + 1}:\n${s}\n\n`)].join("")],
+      [[`LegacyLock recovery shares (${threshold} of ${total} required)\nRecovery set: ${generation}\nStored: ${new Date().toISOString()}\n\n`, ...shares.map((s, i) => `Share ${i + 1}:\n${s}\n\n`)].join("")],
       { type: "text/plain" },
     );
     const a = document.createElement("a");
@@ -261,7 +279,17 @@ export default function VaultSetupPage() {
               <span>
                 <strong>Write these down now — shown once.</strong> Any {threshold} of {total} shares
                 recover your vault. Distribute them out-of-band (paper, safe, trusted people).
-                LegacyLock never transmits raw shares.
+                LegacyLock never transmits raw shares. All shares below belong to one recovery
+                set — never mix them with shares from another setup
+                {(() => {
+                  try {
+                    const g = shares.length ? parseShare(shares[0]).generation : "";
+                    return g ? ` (set ${g.slice(0, 8)}…)` : "";
+                  } catch {
+                    return "";
+                  }
+                })()}
+                .
               </span>
             </p>
           </div>

@@ -74,13 +74,16 @@ Login-password recovery does not recover vault cryptographic material.
 
 Invitation credentials and Shamir shares have independent lifecycles.
 
-### INV-19 — Idempotent Valid Share Submission
+### INV-19 — [SUPERSEDED] Local Reconstruction, No Share Submission
 
-Re-submitting the same valid share does not cause a lockout or duplicate effect.
+The server never receives shares. `POST /access/share` is gone (410);
+reconstruction is client-side exact-k with generation binding.
 
-### INV-20 — Invalid Share Rate Limiting
+### INV-20 — Recovery Abuse Rate Limiting
 
-Invalid recovery attempts are rate-limited against a stable beneficiary/invitation identity, not only against a short-lived beneficiary session.
+Session creation, status, and message retrieval are strictly rate-limited
+server-side; failed decrypts add a best-effort client-side lockout (5/15min).
+The lockout is not authoritative — fewer than k valid shares is the real control.
 
 ## Testing Mapping
 

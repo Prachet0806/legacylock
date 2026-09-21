@@ -16,6 +16,7 @@ export const getAccessStatus = () =>
     share_index: number | null;
     recovery_threshold: number;
     recovery_total: number;
+    recovery_generation?: string | null;
   }>("/access/status");
 export interface RecoveryMessageMeta {
   id: number;

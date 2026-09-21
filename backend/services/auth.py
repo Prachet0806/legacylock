@@ -179,7 +179,13 @@ def verify_refresh_token(token: str, db: Session) -> RefreshToken | None:
         if candidate.replaced_by is not None:
             raise RefreshReuseError(candidate.family_id)
         return None
-    if candidate.expires_at <= datetime.now(UTC):
+    # SQLite returns naive datetimes; normalize before comparing (Postgres
+    # returns aware ones, where _utc is a no-op). Without this every refresh
+    # on SQLite raises TypeError -> 500.
+    expires_at = candidate.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= datetime.now(UTC):
         return None
     return candidate
 

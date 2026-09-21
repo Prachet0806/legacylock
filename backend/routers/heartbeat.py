@@ -1,10 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from config import get_settings
 from deps import get_db, require_owner
 from logging_config import log_audit
 from models import HeartbeatConfig, User, Vault, VaultStatus
@@ -64,6 +65,17 @@ class HeartbeatOut(BaseModel):
     grace_days: int
     last_check_in: str | None
     updated_at: str
+
+
+class RunCheckIn(BaseModel):
+    # Days of simulated elapsed time for deterministic E2E (time travel).
+    # advance_days=31 on a 30-day interval behaves as if 31 days passed.
+    advance_days: float = Field(0, ge=0, le=3650)
+
+
+class RunCheckOut(BaseModel):
+    actions: list[str]
+    simulated_now: str
 
 
 # ---------------------------------------------------------------------------
@@ -132,3 +144,30 @@ def check_in(current_user: User = Depends(require_owner), db: Session = Depends(
         pass
     db.commit()
     return {"message": "Check-in recorded", "last_check_in": cfg.last_check_in.isoformat()}
+
+
+@router.post("/run-check", response_model=RunCheckOut)
+def run_check(
+    data: RunCheckIn,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Run the heartbeat checker synchronously with optional time travel.
+
+    Non-production only (404 in production, like POST /vault/reset-status).
+    Lets E2E prove ACTIVE → GRACE → TRIGGERED with realistic day-granularity
+    config (e.g. 30/7) instead of waiting out real deadlines. Production
+    behavior is untouched: the background loop calls check_heartbeat(db)
+    with no `now` override.
+    """
+    if get_settings().environment == "production":
+        raise HTTPException(status_code=404, detail="Not found")
+    from services.heartbeat_checker import check_heartbeat
+
+    now = datetime.now(UTC) + timedelta(days=data.advance_days)
+    actions = check_heartbeat(db, now=now)
+    try:
+        log_audit("heartbeat.run_check", "owner", current_user.id, None)
+    except Exception:
+        pass
+    return RunCheckOut(actions=actions, simulated_now=now.isoformat())

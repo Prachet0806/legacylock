@@ -1,27 +1,42 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { resendVerification, verifyEmail } from "../../lib/api/public";
 
 function VerifyInner() {
+  const router = useRouter();
   const params = useSearchParams();
   const token = params.get("token") ?? "";
   const [state, setState] = useState<"idle" | "busy" | "ok" | "fail">("idle");
   const [email, setEmail] = useState("");
   const [resent, setResent] = useState(false);
+  // Single-flight guard: the token is atomic single-use server-side, so a
+  // second POST (e.g. React StrictMode's dev double-effect) would burn the
+  // redemption and flip the UI to failure. Refs survive strict remounts.
+  const attempted = useRef(false);
 
   useEffect(() => {
     if (!token) {
-      setState("fail");
+      // After a successful scrub the token reads empty on rerender — that is
+      // not a failure. Only fresh loads without a token fail here.
+      if (!attempted.current) setState("fail");
       return;
     }
+    if (attempted.current) return;
+    attempted.current = true;
     setState("busy");
     verifyEmail(token)
       .then(() => setState("ok"))
-      .catch(() => setState("fail"));
-  }, [token]);
+      .catch(() => setState("fail"))
+      .finally(() => {
+        // Remove the credential from the URL/history immediately after use
+        // via Next's router (a raw history.replaceState is fought by the App
+        // Router's own history patching and leaves the token in place).
+        router.replace("/verify-email", { scroll: false });
+      });
+  }, [token, router]);
 
   async function onResend(e: React.FormEvent) {
     e.preventDefault();

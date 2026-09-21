@@ -10,13 +10,15 @@ LegacyLock is a **security-first web application** that allows users to securely
 - **Zero-knowledge backend** — The server stores only encrypted blobs and never sees plaintext, passwords, VMK, MEK, or Shamir shares.
 - **Per-message random IV** — Every message gets a unique 12-byte IV; each vault gets
   a unique 16-byte KDF salt, preventing rainbow-table attacks.
-- **Shamir's Secret Sharing (2-of-3)** — Vault master key split client-side into shares
-  distributed to beneficiaries out-of-band; any 2 reconstruct.
+- **Shamir's Secret Sharing (k-of-n, default 2-of-3, product max 10)** — Vault master
+  key split client-side into `LLS1-` enveloped shares (version + recovery generation
+  + k/n + checksum) distributed out-of-band; exactly k from one generation reconstruct.
 - **Beneficiary management** — Add/remove beneficiaries, send invitations (hash-stored,
-  single-use, 7-day expiry), assign share indexes.
-- **Beneficiary recovery flow** — Invitation accept → short-lived session → share-hash
-  submission (idempotent, rate-limited) → ciphertext fetch after TRIGGERED → local
-  reconstruct + decrypt. The backend never reconstructs the VMK.
+  single-use, 7-day expiry), assign share indexes. Readiness counts assigned shares
+  (≥k recoverable, all n recommended).
+- **Beneficiary recovery flow** — Invitation accept → short-lived session → ciphertext
+  fetch after TRIGGERED → local generation-validated reconstruct + decrypt. Raw shares
+  never leave the browser; the backend never reconstructs the VMK.
 - **Heartbeat dead-man switch** — Configurable check-in interval and grace period
   (`grace_days` must not exceed `interval_days`) to auto-trigger vault release.
 - **Escalating notifications** — Grace period warnings (Day 0, Day 3 if grace > 3 days,
@@ -34,7 +36,7 @@ Browser (Next.js 14 + Tailwind + Web Crypto API)
   ├─ PBKDF2-SHA256 (600K iterations) for vault passphrase
   ├─ AES-256-GCM for message encryption (per-message MEK)
   ├─ AES-KW for VMK wrapping
-  ├─ Shamir GF(256) 2-of-3 for key splitting (client split + reconstruct only)
+  ├─ Shamir GF(256) k-of-n (default 2-of-3, max 10) for key splitting (client only)
   ├─ RS256 JWT with HttpOnly cookies for auth
   └─ In-memory VMK session (cleared on tab close)
 
@@ -50,7 +52,7 @@ Backend (FastAPI + SQLAlchemy + PostgreSQL)
 
 Database (PostgreSQL)
   ├─ users, vaults, messages, refresh_tokens
-  ├─ beneficiaries, share_attempts
+  ├─ beneficiaries (share_index metadata only; no raw shares)
   ├─ heartbeat_config, vault_status
   ├─ audit_events, notification_logs
   └─ Alembic migrations
@@ -138,7 +140,7 @@ legacylock/
 | Salt (vault KDF) | Random 16 bytes per vault |
 | IV (per message) | Random 12 bytes |
 | VMK Wrapping | AES-KW |
-| Key Splitting | Shamir GF(256) 2-of-3 |
+| Key Splitting | Shamir GF(256) k-of-n (default 2-of-3, product max 10; GF max 255) |
 | JWT Algorithm | RS256 |
 | Access Token TTL | 15 minutes |
 | Refresh Token TTL | 30 days (rotating) |
@@ -191,8 +193,7 @@ legacylock/
 | `/access/invite/{hash}/accept` | POST | Accept invitation (single-use, rotates) |
 | `/access/session` | POST | Refresh beneficiary session (30 min) |
 | `/access/status` | GET | Beneficiary access status (TRIGGERED-gated) |
-| `/access/share` | POST | Submit share hash (idempotent, TRIGGERED-gated) |
-| `/access/share/report-mismatch` | POST | Report failed reconstruction (INV-20 counter) |
+| `/access/share` | POST | Removed (410) — reconstruct locally, shares never leave browser |
 | `/access/messages` | GET | List message metadata (TRIGGERED-gated) |
 | `/access/messages/{id}` | GET | Get ciphertext + wrapped MEK (TRIGGERED-gated) |
 
@@ -353,7 +354,7 @@ npx playwright test            # needs `npx playwright install chromium` once + 
 - Beneficiary CRUD with invitation flow (hash-stored, single-use, expiring links)
 - Share-index assignment (metadata only — raw shares never touch the server)
 - Invitation accept → short-lived beneficiary session
-- Share-hash submission (idempotent) + mismatch lockout (INV-20)
+- Local exact-k reconstruction with generation binding + rate-limited fetch (INV-20)
 - Beneficiary ciphertext fetch after trigger → local reconstruct + decrypt
   (backend never reconstructs the VMK)
 

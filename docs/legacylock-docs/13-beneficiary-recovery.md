@@ -88,22 +88,13 @@ An owner can reissue an invitation for the same share index without changing the
 9. Message keys are unwrapped locally.
 10. Messages are decrypted locally.
 
-## Share Submission
+## Local Reconstruction (no share submission)
 
-Same valid share resubmission:
-
-```text
-→ idempotent no-op
-```
-
-Invalid/different share:
-
-```text
-→ failed attempt
-→ rate-limit tracking
-```
-
-This prevents accidental self-lockout while retaining brute-force protection.
+Shares never leave the beneficiary tab in any form. The browser parses each
+`LLS1-` envelope (version, recovery generation, k/n, checksum), rejects mixed
+generations with a clear error, and reconstructs with exactly k shares via
+Lagrange interpolation. Wrong-share failures surface as checksum/generation
+errors or AES-KW unwrap failure — never as server-tracked attempts.
 
 ## Recovery Errors
 

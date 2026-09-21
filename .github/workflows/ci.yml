@@ -133,6 +133,7 @@ jobs:
     env:
       E2E_OWNER_EMAIL: owner@example.com
       E2E_OWNER_PASSWORD: E2ETestPassword123456
+      E2E_INVITE_CODE: test-invite-code-123
       E2E_DB: /tmp/e2e.db
 
     steps:
@@ -184,6 +185,7 @@ jobs:
           ALLOWED_ORIGINS: http://localhost:3000
           FRONTEND_URL: http://localhost:3000
           HEARTBEAT_ENABLED: "false"
+          REGISTRATION_INVITE_CODE: test-invite-code-123
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
@@ -195,6 +197,7 @@ jobs:
         env:
           CI: "true"
           NEXT_PUBLIC_API_URL: http://localhost:8000
+          E2E_INVITE_CODE: test-invite-code-123
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4

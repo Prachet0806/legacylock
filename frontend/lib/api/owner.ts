@@ -68,16 +68,24 @@ export const putCryptoMaterial = (body: {
   vmk_kdf_parameters: { iterations: number };
   recovery_threshold?: number;
   recovery_total?: number;
+  recovery_generation?: string;
 }) => ownerFetch<{ message: string }>("/vault/crypto-material", { method: "PUT", body: JSON.stringify(body) });
 
-// --- recovery policy (per-vault Shamir k-of-n) ---
+// --- recovery policy + ceremony (per-vault Shamir k-of-n) ---
 export interface RecoveryPolicy {
   recovery_threshold: number;
   recovery_total: number;
+  recovery_generation?: string | null;
+  recovery_status?: string;
 }
 export const getRecoveryPolicy = () => ownerFetch<RecoveryPolicy>("/vault/recovery-policy");
 export const putRecoveryPolicy = (body: { recovery_threshold: number; recovery_total: number }) =>
   ownerFetch<RecoveryPolicy>("/vault/recovery-policy", { method: "PUT", body: JSON.stringify(body) });
+export const postRecoveryCeremony = (body: {
+  recovery_threshold: number;
+  recovery_total: number;
+  recovery_generation: string;
+}) => ownerFetch<RecoveryPolicy>("/vault/recovery-ceremony", { method: "POST", body: JSON.stringify(body) });
 
 // --- vault status / trigger ---
 export interface VaultStatus {
@@ -135,6 +143,13 @@ export const getHeartbeat = () => ownerFetch<HeartbeatConfig>("/heartbeat");
 export const putHeartbeat = (body: { interval_days: number; grace_days: number }) =>
   ownerFetch<{ message: string }>("/heartbeat", { method: "PUT", body: JSON.stringify(body) });
 export const checkin = () => ownerFetch<{ message: string; last_check_in?: string }>("/heartbeat/checkin", { method: "POST" });
+// Test driver only: backend 404s in production. Runs the checker synchronously
+// with simulated elapsed days (time travel for auto-trigger E2E).
+export const runHeartbeatCheck = (advance_days: number) =>
+  ownerFetch<{ actions: string[]; simulated_now: string }>("/heartbeat/run-check", {
+    method: "POST",
+    body: JSON.stringify({ advance_days }),
+  });
 
 export function nextDeadline(cfg: HeartbeatConfig | null): string | null {
   if (!cfg?.last_check_in) return null;

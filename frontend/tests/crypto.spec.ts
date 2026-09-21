@@ -25,6 +25,7 @@ test("shamir any-2-of-3 reconstructs", async () => {
   const vmk = generateVMK();
   const shares = splitVMK(vmk);
   expect(shares).toHaveLength(3);
+  for (const s of shares) expect(s.startsWith("LLS1-")).toBe(true);
   for (const [a, b] of [[0, 1], [0, 2], [1, 2]] as const) {
     const rec = reconstructVMK([shares[a], shares[b]]);
     expect(Buffer.from(rec)).toEqual(Buffer.from(vmk));
@@ -42,6 +43,29 @@ test("shamir k-of-n roundtrips (2-of-2, 3-of-5, 2-of-5)", async () => {
       expect(Buffer.from(reconstructVMK(shares.slice(n - k), k))).toEqual(Buffer.from(vmk));
     }
   }
+});
+
+test("shamir exact-k contract rejects extra shares", async () => {
+  const { splitVMK: split, reconstructVMK: rec } = await import("../lib/shamir");
+  const vmk = generateVMK();
+  const shares = split(vmk, 2, 3);
+  expect(() => rec([shares[0], shares[1], shares[2]], 2)).toThrow(/exactly 2/);
+});
+
+test("shamir mixed generations rejected", async () => {
+  const { splitVMK: split, reconstructVMK: rec } = await import("../lib/shamir");
+  const vmk = generateVMK();
+  const a = split(vmk, 2, 3);
+  const b = split(vmk, 2, 3);
+  expect(() => rec([a[0], b[1]], 2)).toThrow(/different recovery sets/);
+});
+
+test("shamir typo triggers checksum error", async () => {
+  const { reconstructVMK: rec } = await import("../lib/shamir");
+  const vmk = generateVMK();
+  const shares = splitVMK(vmk, 2, 3);
+  const bad = shares[0].slice(0, -2) + (shares[0].endsWith("A") ? "BB" : "AA");
+  expect(() => rec([bad, shares[1]], 2)).toThrow();
 });
 
 test("shamir below-threshold fails", async () => {

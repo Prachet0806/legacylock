@@ -2,6 +2,9 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
+  // Stateful specs (golden path, auto-trigger) share a single seeded owner
+  // vault, so files must not run concurrently against the same backend.
+  workers: 1,
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000",
   },

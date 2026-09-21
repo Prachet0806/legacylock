@@ -96,7 +96,9 @@ def set_auth_cookies(
         secure=secure,
         samesite="lax",
         max_age=30 * 24 * 60 * 60,  # 30 days
-        path="/auth",
+        # Path=/ so the cookie is sent through the documented /api edge
+        # prefix (browser sees /api/auth/refresh; Path=/auth would not match).
+        path="/",
     )
 
 
@@ -108,7 +110,7 @@ def clear_auth_cookies(response: Response, secure: bool = False) -> None:
     )
     response.delete_cookie(
         settings.session_cookie_name_owner_refresh,
-        path="/auth",
+        path="/",
         secure=secure,
         httponly=True,
         samesite="lax",
@@ -187,19 +189,52 @@ def verify_email(
     return {"message": "Email verified"}
 
 
+class TestIssueVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post("/test-issue-verification")
+async def test_issue_verification(
+    data: TestIssueVerificationRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """E2E-only: issue a verification link and return it (no mailbox in tests).
+
+    404 in production. Mirrors the backend test helper that captures the
+    emailed link — the raw token is otherwise unrecoverable (hash-only).
+    """
+    from services.email_verification import issue_verification, verification_link
+
+    if get_settings().environment == "production":
+        raise HTTPException(status_code=404, detail="Not found")
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if user is None or user.email_verified_at is not None:
+        raise HTTPException(status_code=404, detail="No unverified account for this email")
+    # No cooldown here: this IS the test mailbox, not the public resend path.
+    raw = await issue_verification(db, user)
+    return {"link": verification_link(raw)}
+
+
 @router.post("/resend-verification")
 async def resend_verification(
     data: ResendVerificationRequest,
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    """Re-send verification link. Always 200 — enumeration-safe."""
-    from services.email_verification import issue_verification
+    """Re-send verification link. Always 200 — response-level enumeration resistant.
+
+    Per-email 5-minute cooldown supplements IP rate limits (VerificationCooldown
+    maps to the same generic success so the cooldown itself is not an oracle).
+    """
+    from services.email_verification import VerificationCooldown, issue_verification
 
     email = str(data.email).strip().lower()
     user = db.query(User).filter(User.email == email).first()
     if user is not None and user.email_verified_at is None:
         try:
-            await issue_verification(db, user)
+            await issue_verification(db, user, enforce_cooldown=True)
+        except VerificationCooldown:
+            pass
         except Exception:
             pass
     return {"message": "If the account needs verification, an email has been sent"}

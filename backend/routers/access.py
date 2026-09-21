@@ -123,6 +123,7 @@ class AccessStatusOut(BaseModel):
     share_index: int | None
     recovery_threshold: int = 2
     recovery_total: int = 3
+    recovery_generation: str | None = None
     # No has_encrypted_share - backend doesn't store shares
 
 
@@ -177,11 +178,32 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
             db.commit()
             raise HTTPException(status_code=410, detail="Invitation has expired")
 
-    # Mark invitation as accepted and rotate hash so link cannot be replayed
-    beneficiary.invitation_status = "accepted"
-    beneficiary.invitation_accepted_at = datetime.now(UTC)
-    beneficiary.invitation_hash = hash_token(secrets.token_urlsafe(32))
+    # Atomic single-use transition: concurrent accepts must not both succeed.
+    # The conditional UPDATE only flips pending->accepted; rowcount 0 means
+    # another request won the race (or status changed) — re-read for the
+    # correct error.
+    from models import Beneficiary as _Ben
+
+    now = datetime.now(UTC)
+    flipped = (
+        db.query(_Ben)
+        .filter(_Ben.id == beneficiary.id, _Ben.invitation_status == "sent")
+        .update(
+            {
+                _Ben.invitation_status: "accepted",
+                _Ben.invitation_accepted_at: now,
+                _Ben.invitation_hash: hash_token(secrets.token_urlsafe(32)),
+            },
+            synchronize_session=False,
+        )
+    )
     db.commit()
+    if not flipped:
+        db.refresh(beneficiary)
+        if beneficiary.invitation_status == "accepted":
+            raise HTTPException(status_code=409, detail="Invitation already accepted")
+        raise HTTPException(status_code=404, detail="Invalid or expired invitation")
+    db.refresh(beneficiary)
 
     # Create beneficiary-scoped access token (explicit role, 30-minute life)
     vault = _get_vault(db, beneficiary)
@@ -218,7 +240,8 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
         secure=secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/access",
+        # Path=/ so the cookie survives the /api edge prefix strip.
+        path="/",
     )
 
     return InvitationAcceptOut(
@@ -311,7 +334,7 @@ def create_beneficiary_session(
         secure=secure,
         samesite="lax",
         max_age=7 * 24 * 60 * 60,
-        path="/access",
+        path="/",
     )
 
     return SessionCreateOut(
@@ -345,6 +368,7 @@ def get_access_status(
         share_index=current_beneficiary.share_index,
         recovery_threshold=int(getattr(vault, "recovery_threshold", None) or 2),
         recovery_total=int(getattr(vault, "recovery_total", None) or 3),
+        recovery_generation=getattr(vault, "recovery_generation", None),
     )
 
 

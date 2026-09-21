@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, FileText, Info, ShieldCheck, Ticket, Unlock } from "lucide-react";
 import { clsx } from "clsx";
 import { decryptMessage, zeroMemory } from "../../lib/crypto";
-import { reconstructVMK } from "../../lib/shamir";
+import { parseShare, reconstructVMK } from "../../lib/shamir";
 import {
   getAccessStatus,
   getRecoveryMessage,
@@ -29,6 +29,7 @@ export default function RecoveryPage() {
   const [gateOk, setGateOk] = useState(false);
   const [threshold, setThreshold] = useState(2);
   const [total, setTotal] = useState(3);
+  const [generation, setGeneration] = useState<string | null>(null);
   const [shareInputs, setShareInputs] = useState<string[]>(["", ""]);
   const [vmk, setVmk] = useState<Uint8Array | null>(null);
   const [messages, setMessages] = useState<RecoveryMessageMeta[]>([]);
@@ -49,6 +50,7 @@ export default function RecoveryPage() {
         const n = s.recovery_total ?? 3;
         setThreshold(k);
         setTotal(n);
+        setGeneration((s as { recovery_generation?: string | null }).recovery_generation ?? null);
         setShareInputs(Array.from({ length: k }, () => ""));
       } catch (e) {
         setGate(e instanceof Error ? e.message : "status check failed");
@@ -67,10 +69,26 @@ export default function RecoveryPage() {
     setBusy(true);
     try {
       const inputs = shareInputs.map((s) => s.trim()).filter(Boolean);
-      if (inputs.length < threshold) throw new Error(`Enter ${threshold} shares.`);
+      // Exact-k contract: extra input is user error, not silently dropped.
+      if (inputs.length !== threshold)
+        throw new Error(`Enter exactly ${threshold} shares (got ${inputs.length}).`);
+      // Early generation check for a clear error before Lagrange math.
+      try {
+        const gens = new Set(inputs.map((s) => parseShare(s).generation).filter(Boolean));
+        if (gens.size > 1)
+          throw new Error("These shares belong to different recovery sets");
+        if (generation && gens.size === 1 && !gens.has(generation))
+          throw new Error("These shares are not from the current recovery set");
+      } catch (e) {
+        if (e instanceof Error && /recovery set/.test(e.message)) throw e;
+        // Legacy shares carry no generation — fall through to reconstruct.
+      }
       // Reconstruct locally only — shares never leave this tab in any form.
-      const raw = reconstructVMK(inputs.slice(0, threshold), threshold);
+      const raw = reconstructVMK(inputs, threshold, generation ?? undefined);
       setVmk(raw);
+      // Minimize exposure: drop raw share text once the VMK is derived.
+      // (Browser memory can't be securely erased, but this bounds lifetime.)
+      setShareInputs(Array.from({ length: threshold }, () => ""));
       setFailures(0);
       setMessages(await listRecoveryMessages());
       setStep(3);
@@ -163,7 +181,9 @@ export default function RecoveryPage() {
           </h2>
           <p className="text-sm text-muted">
             Paste the shares distributed to you out-of-band. They never leave
-            this tab in any form — reconstruction happens locally.
+            this tab in any form — reconstruction happens locally. Use shares from a single
+            recovery set; mixing sets cannot work.
+            {threshold === 1 && " Note: this vault is 1-of-n — any single share alone recovers."}
           </p>
           {shareInputs.map((val, i) => (
             <div key={i}>

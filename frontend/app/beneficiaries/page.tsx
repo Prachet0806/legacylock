@@ -123,23 +123,35 @@ export default function BeneficiariesPage() {
     }
   }
 
-  const ready = rows.length >= total;
+  // Cryptographic readiness counts assigned share indexes, not beneficiary
+  // rows: a vault is recoverable once at least k shares have a distribution
+  // path. Full distribution (all n assigned) is recommended but not required.
+  const assigned = rows.filter((b) => b.share_index != null).length;
+  const ready = assigned >= threshold;
+  const fullyDistributed = assigned >= total;
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
       <div className="mb-2 flex items-center gap-3">
         <h1 className="text-2xl font-bold">Beneficiaries</h1>
-        <span className="chip">{rows.length} of {total} needed for {threshold}-of-{total}</span>
+        <span className="chip">{assigned} of {total} shares assigned ({threshold}-of-{total})</span>
       </div>
       <p className="mb-6 text-sm text-muted">
         Each beneficiary receives one Shamir share index. Recovery needs any {threshold} of {total} —
-        configure at least {total} {total === 1 ? "person" : "people"} you trust.
+        assign at least {threshold} {threshold === 1 ? "share" : "shares"} for recovery to be possible
+        (all {total} distributed is recommended).
       </p>
 
       {!ready && (
         <div className="card mb-4 border-warn text-sm">
-          Add {total - rows.length} more {total - rows.length === 1 ? "beneficiary" : "beneficiaries"} to
-          reach a {threshold}-of-{total} recovery policy.
+          Assign {threshold - assigned} more {threshold - assigned === 1 ? "share" : "shares"} to
+          reach a recoverable {threshold}-of-{total} policy.
+        </div>
+      )}
+      {ready && !fullyDistributed && (
+        <div className="card mb-4 text-sm">
+          Recovery is possible ({assigned}/{total} shares assigned). Distribute the remaining{" "}
+          {total - assigned} for full redundancy.
         </div>
       )}
 

@@ -37,9 +37,12 @@ const nextConfig = {
   },
   // Local dev (and only dev): proxy same-origin /api/* to the backend so the
   // app can use relative API URLs. Production terminates this at the edge.
+  // Falls back to localhost:8000 so plain `npm run dev` (empty
+  // NEXT_PUBLIC_API_URL) still proxies instead of looping back onto itself.
   async rewrites() {
     if (!isDev) return [];
-    return [{ source: "/api/:path*", destination: `${apiOrigin}/:path*` }];
+    const target = apiOrigin || "http://localhost:8000";
+    return [{ source: "/api/:path*", destination: `${target}/:path*` }];
   },
 };
 

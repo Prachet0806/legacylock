@@ -127,9 +127,12 @@ class CryptoMaterialRequest(BaseModel):
     vmk_kdf_salt: str = Field(..., min_length=1, max_length=10_000)
     vmk_kdf_parameters: dict
     # Optional per-vault Shamir policy (k-of-n). When omitted, existing policy
-    # is preserved (legacy default 2-of-3).
+    # is preserved (legacy default 2-of-3). When k/n change, a fresh
+    # recovery_generation (new ceremony) is required — policy metadata must
+    # never silently diverge from the distributed share set.
     recovery_threshold: int | None = Field(None, ge=1, le=10)
     recovery_total: int | None = Field(None, ge=1, le=10)
+    recovery_generation: str | None = Field(None, min_length=32, max_length=32)
 
 
 class RecoveryPolicyRequest(BaseModel):
@@ -137,9 +140,17 @@ class RecoveryPolicyRequest(BaseModel):
     recovery_total: int = Field(..., ge=1, le=10)
 
 
+class RecoveryCeremonyRequest(BaseModel):
+    recovery_threshold: int = Field(..., ge=1, le=10)
+    recovery_total: int = Field(..., ge=1, le=10)
+    recovery_generation: str = Field(..., min_length=32, max_length=32)
+
+
 class RecoveryPolicyResponse(BaseModel):
     recovery_threshold: int
     recovery_total: int
+    recovery_generation: str | None = None
+    recovery_status: str = "READY"
 
 
 # Exact KDF contract per crypto version — clients may not negotiate weaker
@@ -489,6 +500,28 @@ def save_crypto_material(
         n = data.recovery_total if data.recovery_total is not None else _policy_of(vault)[1]
         _validate_policy(k, n)
         _ensure_policy_fits_assignments(db, vault, n)
+        cur_k, cur_n = _policy_of(vault)
+        if (k, n) != (cur_k, cur_n) or (
+            vault.recovery_generation and data.recovery_generation != vault.recovery_generation
+        ):
+            # New or changed policy must arrive with a fresh ceremony generation.
+            if not data.recovery_generation or not _valid_generation(data.recovery_generation):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Policy change requires a fresh recovery_generation (new ceremony)",
+                )
+            if data.recovery_generation == (vault.recovery_generation or ""):
+                raise HTTPException(
+                    status_code=409,
+                    detail="recovery_generation reuse: generate a new ceremony",
+                )
+            vault.recovery_generation = data.recovery_generation.lower()
+            vault.recovery_status = "READY"
+        elif data.recovery_generation and not vault.recovery_generation:
+            if not _valid_generation(data.recovery_generation):
+                raise HTTPException(status_code=422, detail="Invalid recovery_generation")
+            vault.recovery_generation = data.recovery_generation.lower()
+            vault.recovery_status = "READY"
         vault.recovery_threshold = k
         vault.recovery_total = n
 
@@ -509,15 +542,79 @@ def save_crypto_material(
     return {"message": "Crypto material saved successfully"}
 
 
+def _valid_generation(g: str | None) -> bool:
+    if not g or len(g) != 32:
+        return False
+    try:
+        int(g, 16)
+        return True
+    except ValueError:
+        return False
+
+
 @router.get("/recovery-policy", response_model=RecoveryPolicyResponse)
 def get_recovery_policy(
     current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """Return the vault's Shamir k-of-n policy (legacy default 2-of-3)."""
+    """Return the vault's Shamir k-of-n policy + ceremony binding."""
     vault = _get_vault(db, current_user)
     k, n = _policy_of(vault)
-    return RecoveryPolicyResponse(recovery_threshold=k, recovery_total=n)
+    return RecoveryPolicyResponse(
+        recovery_threshold=k,
+        recovery_total=n,
+        recovery_generation=vault.recovery_generation,
+        recovery_status=vault.recovery_status or "READY",
+    )
+
+
+@router.post("/recovery-ceremony", response_model=RecoveryPolicyResponse)
+def post_recovery_ceremony(
+    data: RecoveryCeremonyRequest,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    """Commit a client-side recovery ceremony: new generation binds policy to shares.
+
+    The server never sees raw shares — only (generation, k, n). Generation must
+    be fresh (never reused) so old share sets cannot be confused with the new one.
+    """
+    from models import Vault as VaultModel
+
+    vault = (
+        db.query(VaultModel)
+        .filter(VaultModel.user_id == current_user.id, VaultModel.is_primary == True)
+        .first()
+    )
+    if not vault:
+        vault = VaultModel(user_id=current_user.id, name="Primary Vault", is_primary=True)
+        db.add(vault)
+        db.commit()
+        db.refresh(vault)
+    _validate_policy(data.recovery_threshold, data.recovery_total)
+    _ensure_policy_fits_assignments(db, vault, data.recovery_total)
+    gen = data.recovery_generation.lower()
+    if not _valid_generation(gen):
+        raise HTTPException(status_code=422, detail="Invalid recovery_generation")
+    if gen == (vault.recovery_generation or ""):
+        raise HTTPException(status_code=409, detail="recovery_generation reuse: generate a new one")
+    vault.recovery_threshold = data.recovery_threshold
+    vault.recovery_total = data.recovery_total
+    vault.recovery_generation = gen
+    vault.recovery_status = "READY"
+    vault.updated_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(vault)
+    try:
+        log_audit("vault.recovery_ceremony", "owner", current_user.id, vault.id)
+    except Exception:
+        pass
+    return RecoveryPolicyResponse(
+        recovery_threshold=vault.recovery_threshold,
+        recovery_total=vault.recovery_total,
+        recovery_generation=vault.recovery_generation,
+        recovery_status=vault.recovery_status,
+    )
 
 
 @router.put("/recovery-policy", response_model=RecoveryPolicyResponse)
@@ -526,10 +623,13 @@ def put_recovery_policy(
     current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """Set the vault's Shamir k-of-n policy (creates vault if none exists).
+    """Legacy policy setter — now ceremony-guarded.
 
-    Changing policy after shares were distributed invalidates old shares —
-    the owner must re-run setup (re-split) and redistribute.
+    Changing k/n without a fresh ceremony generation would let policy metadata
+    diverge from the distributed share set (the old shares stay mathematically
+    usable). Direct silent changes are rejected with 409; use
+    POST /vault/recovery-ceremony with a fresh recovery_generation instead.
+    Re-saving the identical policy is allowed (no-op).
     """
     vault = (
         db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
@@ -540,18 +640,21 @@ def put_recovery_policy(
         db.commit()
         db.refresh(vault)
     _validate_policy(data.recovery_threshold, data.recovery_total)
+    cur_k, cur_n = _policy_of(vault)
+    if (data.recovery_threshold, data.recovery_total) != (cur_k, cur_n):
+        raise HTTPException(
+            status_code=409,
+            detail="Policy change requires POST /vault/recovery-ceremony with a fresh generation",
+        )
     _ensure_policy_fits_assignments(db, vault, data.recovery_total)
-    vault.recovery_threshold = data.recovery_threshold
-    vault.recovery_total = data.recovery_total
     vault.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(vault)
-    try:
-        log_audit("vault.recovery_policy_save", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
     return RecoveryPolicyResponse(
-        recovery_threshold=vault.recovery_threshold, recovery_total=vault.recovery_total
+        recovery_threshold=vault.recovery_threshold,
+        recovery_total=vault.recovery_total,
+        recovery_generation=vault.recovery_generation,
+        recovery_status=vault.recovery_status or "READY",
     )
 
 

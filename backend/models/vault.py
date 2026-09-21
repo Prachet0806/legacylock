@@ -19,6 +19,10 @@ class Vault(Base):
     # Per-vault Shamir recovery policy (k-of-n). Legacy rows default to 2-of-3.
     recovery_threshold = Column(Integer, nullable=False, default=2, server_default="2")
     recovery_total = Column(Integer, nullable=False, default=3, server_default="3")
+    # Recovery ceremony binding: 128-bit hex generation id + lifecycle status.
+    # Policy metadata without a matching share generation is not authoritative.
+    recovery_generation = Column(String(32), nullable=True)
+    recovery_status = Column(String(20), nullable=False, default="READY", server_default="READY")
     vmk_crypto_version = Column(Integer, nullable=True)
     vmk_kdf_algorithm = Column(String(50), nullable=True)
     vmk_kdf_salt = Column(Text, nullable=True)

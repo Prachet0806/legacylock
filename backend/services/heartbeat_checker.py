@@ -155,14 +155,18 @@ def _dispatch(
 
 
 def _send_grace_notifications(
-    db: Session, vault_id: int, cfg: HeartbeatConfig, vs: VaultStatus
+    db: Session,
+    vault_id: int,
+    cfg: HeartbeatConfig,
+    vs: VaultStatus,
+    now: datetime | None = None,
 ) -> None:
     """Send escalating notifications during grace period."""
     from services.notifications import send_email, send_sms
 
     if not vs.grace_started_at:
         return
-    now = datetime.now(UTC)
+    now = _utc(now) if now is not None else datetime.now(UTC)
     grace_elapsed = _elapsed_days(vs.grace_started_at, now)
     beneficiaries = db.query(Beneficiary).filter(Beneficiary.vault_id == vault_id).all()
     if not beneficiaries:
@@ -280,14 +284,19 @@ def _send_trigger_notifications(db: Session, vault_id: int) -> None:
     logger.info("Sent trigger notifications to %d beneficiaries", len(beneficiaries))
 
 
-def check_heartbeat(db: Session) -> list[str]:
+def check_heartbeat(db: Session, now: datetime | None = None) -> list[str]:
     """Evaluate heartbeat for all vaults and transition vault status.
+
+    The optional `now` parameter exists for deterministic tests and the
+    non-production run-check endpoint (time travel). Production callers omit
+    it, in which case behavior is exactly `datetime.now(UTC)`.
 
     Returns:
         List of actions taken across all vaults.
     """
     vaults = _get_vaults(db)
-    actions = []
+    actions: list[str] = []
+    now = _utc(now) if now is not None else datetime.now(UTC)
 
     for vault in vaults:
         cfg = vault.heartbeat_config
@@ -295,7 +304,6 @@ def check_heartbeat(db: Session) -> list[str]:
             continue  # heartbeat not configured or never checked in for this vault
 
         vs = _get_vault_status(db, vault.id)
-        now = datetime.now(UTC)
 
         # Already triggered — nothing to do
         if vs.state == "triggered":
@@ -315,7 +323,7 @@ def check_heartbeat(db: Session) -> list[str]:
                 db.commit()
             except Exception:
                 db.rollback()
-            _send_grace_notifications(db, vault.id, cfg, vs)
+            _send_grace_notifications(db, vault.id, cfg, vs, now)
             actions.append(f"vault_{vault.id}_grace_started")
             continue
 
@@ -341,7 +349,7 @@ def check_heartbeat(db: Session) -> list[str]:
                 actions.append(f"vault_{vault.id}_triggered")
             else:
                 # Still in grace — check for notification milestones
-                _send_grace_notifications(db, vault.id, cfg, vs)
+                _send_grace_notifications(db, vault.id, cfg, vs, now)
                 actions.append(f"vault_{vault.id}_grace_notify")
 
     return actions
