@@ -28,6 +28,10 @@ if config.config_file_name is not None:
 db_url = os.environ.get("DATABASE_URL")
 if not db_url:
     raise RuntimeError("DATABASE_URL must be set to run migrations")
+if db_url.startswith("postgres://"):
+    db_url = "postgresql+psycopg://" + db_url[len("postgres://") :]
+elif db_url.startswith("postgresql://") and "+" not in db_url.split("://")[0]:
+    db_url = "postgresql+psycopg://" + db_url[len("postgresql://") :]
 config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = Base.metadata

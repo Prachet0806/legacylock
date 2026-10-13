@@ -22,6 +22,8 @@ export {
   manualTrigger,
   nextDeadline,
   postRecoveryCeremony,
+  finalizeCeremony,
+  cancelCeremony,
   putCryptoMaterial,
   putHeartbeat,
   putRecoveryPolicy,
@@ -42,6 +44,7 @@ export {
   getInviteStatus,
   getRecoveryMessage,
   listRecoveryMessages,
+  revokeBeneficiarySession,
   type RecoveryMessageDetail,
   type RecoveryMessageMeta,
 } from "./api/beneficiary";

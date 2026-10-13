@@ -75,11 +75,14 @@ def create_access_token(
     vault_id: int | None,
     role: str,
     expires_minutes: int = ACCESS_TOKEN_EXPIRE_MINUTES,
+    jti: str | None = None,
 ) -> str:
     """Create a short-lived JWT access token. Role is required (no default).
 
     vault_id may be None for owners who have not set up a vault yet — routers
     fail closed (404 Vault not found) until setup provisions the primary vault.
+    Beneficiary tokens carry a server-side jti bound to Beneficiary.session_jti
+    so revoke/delete kills the token within its TTL.
     """
     if role not in ("owner", "beneficiary"):
         raise ValueError("role must be 'owner' or 'beneficiary'")
@@ -92,7 +95,12 @@ def create_access_token(
         "type": "access",
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
+        "auth_epoch": get_settings().auth_epoch,
     }
+    if jti is not None:
+        payload["jti"] = jti
+    elif role == "beneficiary":
+        payload["jti"] = secrets.token_urlsafe(16)
     return jwt.encode(payload, _get_jwt_private_key(), algorithm=JWT_ALGORITHM)
 
 
@@ -211,6 +219,8 @@ def decode_access_token(token: str) -> dict | None:
         public_key = _get_jwt_public_key()
         payload = jwt.decode(token, public_key, algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
+            return None
+        if payload.get("auth_epoch") != get_settings().auth_epoch:
             return None
         if payload.get("role") not in ("owner", "beneficiary"):
             return None

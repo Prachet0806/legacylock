@@ -1,3 +1,5 @@
+from tests.helpers import complete_ceremony
+
 """Tests for per-vault Shamir k-of-n recovery policy + ceremony binding."""
 
 import secrets
@@ -19,8 +21,8 @@ class TestRecoveryPolicy:
         assert body["recovery_total"] == 3
 
     def test_ceremony_sets_policy_and_generation(self, client, auth):
-        res = client.post(
-            "/vault/recovery-ceremony",
+        res = complete_ceremony(
+            client,
             json={"recovery_threshold": 3, "recovery_total": 5, "recovery_generation": GEN_A},
             headers=auth,
         )
@@ -50,8 +52,8 @@ class TestRecoveryPolicy:
 
     def test_ceremony_generation_reuse_rejected(self, client, auth):
         assert (
-            client.post(
-                "/vault/recovery-ceremony",
+            complete_ceremony(
+                client,
                 json={
                     "recovery_threshold": 2,
                     "recovery_total": 3,
@@ -61,16 +63,16 @@ class TestRecoveryPolicy:
             ).status_code
             == 200
         )
-        res = client.post(
-            "/vault/recovery-ceremony",
+        res = complete_ceremony(
+            client,
             json={"recovery_threshold": 2, "recovery_total": 3, "recovery_generation": GEN_B},
             headers=auth,
         )
         assert res.status_code == 409
 
     def test_small_n_allowed(self, client, auth):
-        res = client.post(
-            "/vault/recovery-ceremony",
+        res = complete_ceremony(
+            client,
             json={"recovery_threshold": 2, "recovery_total": 2, "recovery_generation": GEN_C},
             headers=auth,
         )
@@ -78,16 +80,16 @@ class TestRecoveryPolicy:
 
     def test_single_share_allowed(self, client, auth):
         # 1-of-n kept by product decision (single share recovers — warn in UI).
-        res = client.post(
-            "/vault/recovery-ceremony",
+        res = complete_ceremony(
+            client,
             json={"recovery_threshold": 1, "recovery_total": 1, "recovery_generation": GEN_D},
             headers=auth,
         )
         assert res.status_code == 200
 
     def test_threshold_above_total_rejected(self, client, auth):
-        res = client.post(
-            "/vault/recovery-ceremony",
+        res = complete_ceremony(
+            client,
             json={
                 "recovery_threshold": 4,
                 "recovery_total": 3,
@@ -98,30 +100,30 @@ class TestRecoveryPolicy:
         assert res.status_code == 422
 
     def test_share_index_bounded_by_policy(self, client, auth):
-        client.post(
-            "/vault/recovery-ceremony",
+        complete_ceremony(
+            client,
             json={"recovery_threshold": 2, "recovery_total": 5, "recovery_generation": GEN_E},
             headers=auth,
         )
-        post = client.post(
-            "/beneficiaries", json={"name": "A", "email": "a@t.com"}, headers=auth
-        )
+        post = client.post("/beneficiaries", json={"name": "A", "email": "a@t.com"}, headers=auth)
         assert post.status_code == 201
         ben_id = post.json()["id"]
-        ok = client.post(f"/beneficiaries/{ben_id}/assign-share", json={"share_index": 5}, headers=auth)
+        ok = client.post(
+            f"/beneficiaries/{ben_id}/assign-share", json={"share_index": 5}, headers=auth
+        )
         assert ok.status_code == 200
-        bad = client.post(f"/beneficiaries/{ben_id}/assign-share", json={"share_index": 6}, headers=auth)
+        bad = client.post(
+            f"/beneficiaries/{ben_id}/assign-share", json={"share_index": 6}, headers=auth
+        )
         assert bad.status_code == 422
 
     def test_shrinking_total_below_assignment_rejected(self, client, auth):
-        client.post(
-            "/vault/recovery-ceremony",
+        complete_ceremony(
+            client,
             json={"recovery_threshold": 2, "recovery_total": 5, "recovery_generation": GEN_F},
             headers=auth,
         )
-        post = client.post(
-            "/beneficiaries", json={"name": "A", "email": "a@t.com"}, headers=auth
-        )
+        post = client.post("/beneficiaries", json={"name": "A", "email": "a@t.com"}, headers=auth)
         ben_id = post.json()["id"]
         assert (
             client.post(
@@ -129,8 +131,8 @@ class TestRecoveryPolicy:
             ).status_code
             == 200
         )
-        res = client.post(
-            "/vault/recovery-ceremony",
+        res = complete_ceremony(
+            client,
             json={
                 "recovery_threshold": 2,
                 "recovery_total": 3,
@@ -140,38 +142,78 @@ class TestRecoveryPolicy:
         )
         assert res.status_code == 409
 
-    def test_crypto_material_policy_change_requires_generation(self, client, auth):
+    def test_crypto_material_rejects_policy_fields_single_writer(self, client, auth):
         import base64
 
-        wrapped = base64.b64encode(b"0" * 48).decode()
+        wrapped = base64.b64encode(b"0" * 40).decode()
         salt = base64.b64encode(b"1" * 16).decode()
         base = {
             "wrapped_vmk": wrapped,
+            "expected_revision": client.get("/vault/crypto-material", headers=auth).json()[
+                "material_revision"
+            ],
             "vmk_crypto_version": 1,
             "vmk_kdf_algorithm": "PBKDF2-SHA256",
             "vmk_kdf_salt": salt,
             "vmk_kdf_parameters": {"iterations": 600000},
         }
-        # Silent k/n change without generation -> 409.
+        # Single-writer: PUT must not accept policy/generation fields (422).
         res = client.put(
             "/vault/crypto-material",
             json={**base, "recovery_threshold": 3, "recovery_total": 5},
             headers=auth,
         )
-        assert res.status_code == 409
-        # With fresh generation -> 200.
+        assert res.status_code == 422
+        # Material-only PUT succeeds; policy owned by ceremony.
+        res = client.put("/vault/crypto-material", json=base, headers=auth)
+        assert res.status_code == 200
         gen = secrets.token_hex(16)
-        res = client.put(
-            "/vault/crypto-material",
-            json={
-                **base,
-                "recovery_threshold": 3,
-                "recovery_total": 5,
-                "recovery_generation": gen,
-            },
+        res = complete_ceremony(
+            client,
+            json={"recovery_threshold": 3, "recovery_total": 5, "recovery_generation": gen},
             headers=auth,
         )
         assert res.status_code == 200
         got = client.get("/vault/recovery-policy", headers=auth).json()
         assert got["recovery_threshold"] == 3
         assert got["recovery_generation"] == gen
+
+    def test_ceremony_generation_fresh_same_fresh_invariant(self, client, auth):
+        gen1 = secrets.token_hex(16)
+        gen2 = secrets.token_hex(16)
+        assert (
+            complete_ceremony(
+                client,
+                json={
+                    "recovery_threshold": 2,
+                    "recovery_total": 3,
+                    "recovery_generation": gen1,
+                },
+                headers=auth,
+            ).status_code
+            == 200
+        )
+        assert (
+            complete_ceremony(
+                client,
+                json={
+                    "recovery_threshold": 2,
+                    "recovery_total": 3,
+                    "recovery_generation": gen1,
+                },
+                headers=auth,
+            ).status_code
+            == 409
+        )
+        assert (
+            complete_ceremony(
+                client,
+                json={
+                    "recovery_threshold": 2,
+                    "recovery_total": 3,
+                    "recovery_generation": gen2,
+                },
+                headers=auth,
+            ).status_code
+            == 200
+        )

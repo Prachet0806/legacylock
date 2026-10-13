@@ -4,18 +4,20 @@ import base64
 
 import pytest
 
-_WMEK = base64.b64encode(b"0" * 32).decode()
+_WMEK = base64.b64encode(b"0" * 40).decode()
 _IV = base64.b64encode(b"1" * 12).decode()
 
 MESSAGE_A = {
     "label": "Bank Info",
     "ciphertext": "ZW5jcnlwdGVkY29udGVudA==",
+    "material_revision": 1,
     "wrapped_mek": _WMEK,
     "crypto_metadata": {"iv": _IV},
 }
 MESSAGE_B = {
     "label": "Seed Phrase",
     "ciphertext": "c2VlZHBocmFzZWVuY3J5cHRlZA==",
+    "material_revision": 1,
     "wrapped_mek": _WMEK,
     "crypto_metadata": {"iv": _IV},
 }
@@ -103,7 +105,11 @@ class TestVaultCRUD:
     def test_update_message(self, client, auth):
         post = client.post("/vault/messages", json=MESSAGE_A, headers=auth)
         msg_id = post.json()["id"]
-        updated = {"label": "Updated Label", "ciphertext": "bmV3Y2lwaGVydGV4dA=="}
+        updated = {
+            **MESSAGE_A,
+            "label": "Updated Label",
+            "ciphertext": base64.b64encode(b"n" * 32).decode(),
+        }
         res = client.put(f"/vault/messages/{msg_id}", json=updated, headers=auth)
         assert res.status_code == 200
         # Verify the update was persisted
@@ -229,16 +235,30 @@ class TestVaultCRUD:
         # Explicit setup provisions the primary vault
         token = create_access_token(uid, None, role="owner")
         body = {
-            "wrapped_vmk": base64.b64encode(b"0" * 32).decode(),
+            "wrapped_vmk": base64.b64encode(b"0" * 40).decode(),
+            "expected_revision": 1,
             "vmk_crypto_version": 1,
             "vmk_kdf_algorithm": "PBKDF2-SHA256",
             "vmk_kdf_salt": base64.b64encode(b"s" * 16).decode(),
             "vmk_kdf_parameters": {"iterations": 600000},
         }
+        body["expected_revision"] = 0
+        draft = client.post(
+            "/vault/recovery-ceremony",
+            json={
+                "expected_revision": 0,
+                "recovery_threshold": 2,
+                "recovery_total": 3,
+                "recovery_generation": uuid.uuid4().hex,
+                "initial_material": body,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert draft.status_code == 200
         assert (
-            client.put(
-                "/vault/crypto-material",
-                json=body,
+            client.post(
+                f"/vault/recovery-ceremony/{draft.json()['ceremony_id']}/finalize",
+                json={"stored_indexes": [1, 2, 3]},
                 headers={"Authorization": f"Bearer {token}"},
             ).status_code
             == 200
@@ -254,7 +274,9 @@ class TestVaultCRUD:
 class TestVaultValidation:
     def test_label_required(self, client, auth):
         res = client.post(
-            "/vault/messages", json={"ciphertext": "YWJj", "wrapped_mek": _WMEK}, headers=auth
+            "/vault/messages",
+            json={"ciphertext": "YWJj", "material_revision": 1, "wrapped_mek": _WMEK},
+            headers=auth,
         )
         assert res.status_code == 422
 
@@ -271,20 +293,30 @@ class TestVaultValidation:
     def test_bad_base64_rejected(self, client, auth):
         res = client.post(
             "/vault/messages",
-            json={"label": "t", "ciphertext": "!!!not-base64", "wrapped_mek": _WMEK},
+            json={
+                "label": "t",
+                "ciphertext": "!!!not-base64",
+                "material_revision": 1,
+                "wrapped_mek": _WMEK,
+            },
             headers=auth,
         )
         assert res.status_code == 422
 
     def test_label_too_long(self, client, auth):
-        payload = {"label": "x" * 201, "ciphertext": "YWJj", "wrapped_mek": _WMEK}
+        payload = {
+            "label": "x" * 201,
+            "ciphertext": "YWJj",
+            "material_revision": 1,
+            "wrapped_mek": _WMEK,
+        }
         res = client.post("/vault/messages", json=payload, headers=auth)
         assert res.status_code == 422
 
     def test_empty_label(self, client, auth):
         res = client.post(
             "/vault/messages",
-            json={"label": "", "ciphertext": "YWJj", "wrapped_mek": _WMEK},
+            json={"label": "", "ciphertext": "YWJj", "material_revision": 1, "wrapped_mek": _WMEK},
             headers=auth,
         )
         assert res.status_code == 422

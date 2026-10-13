@@ -5,13 +5,14 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Eye, EyeOff, UserPlus, Vault as VaultIcon } from "lucide-react";
 import { register } from "../../lib/api/public";
+import { ApiError } from "../../lib/api/transport";
 import { useToast } from "../../components/toast";
 
 function messageOf(err: unknown): string {
   const msg = err instanceof Error ? err.message : "";
-  if (msg.includes("403")) return "Invalid invitation code or registration disabled.";
-  if (msg.includes("409")) return "An account with this email already exists. Try logging in.";
-  if (msg.includes("422")) return "Check your entries — password must be 12+ characters.";
+  if (err instanceof ApiError && err.status === 403) return "Invalid invitation code or registration disabled.";
+  if (err instanceof ApiError && err.status === 409) return "Registration could not complete. Try again.";
+  if (err instanceof ApiError && err.status === 422) return "Check your entries — password must be 12+ characters.";
   return "Registration failed. Try again.";
 }
 

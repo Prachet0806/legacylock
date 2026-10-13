@@ -1,5 +1,5 @@
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 
 from config import get_settings
 from deps import get_db, require_owner
-from logging_config import log_audit
 from models import Beneficiary, User, Vault
+from services.audit import record_audit
 from services.auth import hash_token
+from services.sessions import revoke_beneficiary
+from services.trigger_service import lock_status
 
 router = APIRouter(
     prefix="/beneficiaries",
@@ -18,15 +20,15 @@ router = APIRouter(
     dependencies=[Depends(require_owner)],
 )
 
-
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
 
-
 MAX_SHARE_INDEX = 255  # GF(256) x-coord range; per-vault total caps further.
 
 # Accepts the GF(256) range here; routes enforce 1 <= idx <= vault.recovery_total.
+
+
 class BeneficiaryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     email: EmailStr = Field(..., max_length=320)
@@ -47,6 +49,7 @@ class BeneficiaryOut(BaseModel):
     email: str
     phone: str | None
     share_index: int | None
+    assignment_current: bool = False
     invitation_status: str
     invitation_sent_at: str | None
     invitation_accepted_at: str | None
@@ -85,9 +88,7 @@ def _policy(vault: Vault) -> tuple[int, int]:
 def _check_share_in_range(vault: Vault, idx: int) -> None:
     _, n = _policy(vault)
     if idx < 1 or idx > n:
-        raise HTTPException(
-            status_code=422, detail=f"share_index must be between 1 and {n}"
-        )
+        raise HTTPException(status_code=422, detail=f"share_index must be between 1 and {n}")
 
 
 def _generate_invitation_hash() -> str:
@@ -102,28 +103,6 @@ def _store_invitation(beneficiary: Beneficiary) -> str:
     return raw
 
 
-async def _send_invitation_email(beneficiary: Beneficiary, invitation_link: str) -> None:
-    """Send invitation email to beneficiary."""
-    from services.notifications import send_email
-
-    await send_email(
-        beneficiary.email,
-        "LegacyLock — You've Been Invited as a Beneficiary",
-        f"""Hello {beneficiary.name},
-
-You have been invited to be a beneficiary for a LegacyLock vault.
-
-To accept this invitation and set up your access, please visit:
-{invitation_link}
-
-This invitation will expire in 7 days. If you have any questions, please contact the vault owner directly.
-
---
-LegacyLock
-Secure Digital Legacy""",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -136,7 +115,8 @@ def add_beneficiary(
     db: Session = Depends(get_db),
 ):
     vault = _get_vault(db, current_user)
-
+    lock_status(db, vault.id)
+    db.refresh(vault)
     # Check if beneficiary already exists for this vault
     existing = (
         db.query(Beneficiary)
@@ -145,7 +125,6 @@ def add_beneficiary(
     )
     if existing:
         raise HTTPException(status_code=409, detail="Beneficiary with this email already exists")
-
     if data.share_index is not None:
         _check_share_in_range(vault, data.share_index)
     entry = Beneficiary(
@@ -166,7 +145,10 @@ def add_beneficiary(
         )
         if clash:
             raise HTTPException(status_code=409, detail="share_index already assigned")
+    entry.email = entry.email.strip().lower()
+    entry.ceremony_generation = vault.recovery_generation if entry.share_index else None
     db.add(entry)
+    record_audit(db, vault.id, "owner", current_user.id, "beneficiary.add", {})
     try:
         db.commit()
     except IntegrityError as exc:
@@ -175,10 +157,6 @@ def add_beneficiary(
             status_code=409, detail="Beneficiary with this email already exists"
         ) from exc
     db.refresh(entry)
-    try:
-        log_audit("beneficiary.add", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
     return {"id": entry.id, "message": "Beneficiary added"}
 
 
@@ -198,6 +176,11 @@ def list_beneficiaries(current_user: User = Depends(require_owner), db: Session 
             email=r.email,
             phone=r.phone,
             share_index=r.share_index,
+            assignment_current=bool(
+                r.share_index is not None
+                and r.ceremony_generation == vault.recovery_generation
+                and vault.recovery_status in ("READY", "LEGACY")
+            ),
             invitation_status=r.invitation_status,
             invitation_sent_at=r.invitation_sent_at.isoformat() if r.invitation_sent_at else None,
             invitation_accepted_at=r.invitation_accepted_at.isoformat()
@@ -210,61 +193,52 @@ def list_beneficiaries(current_user: User = Depends(require_owner), db: Session 
 
 
 @router.post("/{beneficiary_id}/invite")
-async def invite_beneficiary(
+def invite_beneficiary(
     beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)
 ):
-    """Send invitation email to beneficiary."""
-    vault = _get_vault(db, current_user)
+    from services.outbox import enqueue, event
 
+    vault = _get_vault(db, current_user)
+    revision = lock_status(db, vault.id).version
+    db.refresh(vault)
     beneficiary = (
         db.query(Beneficiary)
-        .filter(Beneficiary.id == beneficiary_id, Beneficiary.vault_id == vault.id)
+        .filter_by(id=beneficiary_id, vault_id=vault.id)
+        .with_for_update()
+        .populate_existing()
+        .with_for_update()
         .first()
     )
-
     if not beneficiary:
-        raise HTTPException(status_code=404, detail="Beneficiary not found")
-
-    # Generate invitation token if not exists (rotate if expired); store hash only.
-    raw_token: str | None = None
-    if not beneficiary.invitation_hash or beneficiary.invitation_status == "expired":
-        raw_token = _store_invitation(beneficiary)
-
+        raise HTTPException(404, "Beneficiary not found")
+    if beneficiary.invitation_status == "accepted":
+        raise HTTPException(409, "Already accepted; beneficiary can request a sign-in link")
+    revoke_beneficiary(db, beneficiary)
+    raw = _store_invitation(beneficiary)
     beneficiary.invitation_status = "sent"
     beneficiary.invitation_sent_at = datetime.now(UTC)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raw_token = _store_invitation(beneficiary)
-        db.commit()
-    db.refresh(beneficiary)
-
-    # Build invitation link (configurable frontend URL). If we reused an existing
-    # hash (already sent, not expired), we cannot recover the raw token — rotate.
-    if raw_token is None:
-        raw_token = _store_invitation(beneficiary)
-        db.commit()
-        db.refresh(beneficiary)
-
-    # Build invitation link (configurable frontend URL)
-    try:
-        frontend_url = get_settings().frontend_origin()
-    except Exception:
-        frontend_url = "http://localhost:3000"
-    invitation_link = f"{frontend_url}/access/invite/{raw_token}"
-
-    # Send email
-    await _send_invitation_email(beneficiary, invitation_link)
-    try:
-        log_audit("beneficiary.invite", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
-
+    invitation_link = f"{get_settings().frontend_origin()}/access/invite#token={raw}"
+    business = event(db, vault.id, "invitation", revision)
+    enqueue(
+        db,
+        business,
+        f"beneficiary:{beneficiary.id}",
+        beneficiary.email,
+        "LegacyLock - Beneficiary invitation",
+        f"Accept your invitation (expires in 7 days):\n{invitation_link}\nStore your recovery shares separately.",
+        beneficiary=beneficiary,
+        expires=datetime.now(UTC) + timedelta(days=7),
+    )
+    record_audit(db, vault.id, "owner", current_user.id, "beneficiary.invite", {})
+    db.commit()
     return {
-        "message": "Invitation sent",
-        "invitation_link": invitation_link,
+        "message": "Invitation queued",
         "beneficiary_id": beneficiary.id,
+        **(
+            {"invitation_link": invitation_link}
+            if get_settings().environment != "production"
+            else {}
+        ),
     }
 
 
@@ -276,22 +250,32 @@ def update_beneficiary(
     db: Session = Depends(get_db),
 ):
     vault = _get_vault(db, current_user)
-
+    lock_status(db, vault.id)
+    db.refresh(vault)
     beneficiary = (
         db.query(Beneficiary)
         .filter(Beneficiary.id == beneficiary_id, Beneficiary.vault_id == vault.id)
+        .populate_existing()
+        .with_for_update()
         .first()
     )
-
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
-
     if data.name is not None:
         beneficiary.name = data.name
-    if data.email is not None:
-        beneficiary.email = str(data.email)
-    if data.phone is not None:
+    if data.email is not None and str(data.email).strip().lower() != beneficiary.email:
+        revoke_beneficiary(db, beneficiary)
+        beneficiary.contact_revision += 1
+        beneficiary.email = str(data.email).strip().lower()
+        beneficiary.invitation_status = "pending"
+        beneficiary.invitation_hash = None
+        beneficiary.invitation_accepted_at = None
+        beneficiary.invitation_sent_at = None
+    if "phone" in data.model_fields_set:
         beneficiary.phone = data.phone
+    if "share_index" in data.model_fields_set and data.share_index is None:
+        beneficiary.share_index = None
+        beneficiary.ceremony_generation = None
     if data.share_index is not None:
         _check_share_in_range(vault, data.share_index)
         clash = (
@@ -306,8 +290,9 @@ def update_beneficiary(
         if clash:
             raise HTTPException(status_code=409, detail="share_index already assigned")
         beneficiary.share_index = data.share_index
-
+        beneficiary.ceremony_generation = vault.recovery_generation
     beneficiary.updated_at = datetime.now(UTC)
+    record_audit(db, vault.id, "owner", current_user.id, "beneficiary.update", {})
     try:
         db.commit()
     except IntegrityError as exc:
@@ -318,11 +303,6 @@ def update_beneficiary(
             status_code=409, detail="Beneficiary conflicts with an existing record"
         ) from exc
     db.refresh(beneficiary)
-    try:
-        log_audit("beneficiary.update", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
-
     return {"message": "Beneficiary updated"}
 
 
@@ -339,6 +319,8 @@ def assign_share(
 ):
     """Assign a Shamir share index (metadata only, never raw share values)."""
     vault = _get_vault(db, current_user)
+    lock_status(db, vault.id)
+    db.refresh(vault)
     _check_share_in_range(vault, data.share_index)
     beneficiary = (
         db.query(Beneficiary)
@@ -346,6 +328,8 @@ def assign_share(
             Beneficiary.id == beneficiary_id,
             Beneficiary.vault_id == vault.id,
         )
+        .populate_existing()
+        .with_for_update()
         .first()
     )
     if not beneficiary:
@@ -362,16 +346,14 @@ def assign_share(
     if clash:
         raise HTTPException(status_code=409, detail="share_index already assigned")
     beneficiary.share_index = data.share_index
+    beneficiary.ceremony_generation = vault.recovery_generation
     beneficiary.updated_at = datetime.now(UTC)
+    record_audit(db, vault.id, "owner", current_user.id, "beneficiary.update", {})
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="share_index already assigned") from exc
-    try:
-        log_audit("beneficiary.share_assign", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
     return {"message": "Share index assigned", "share_index": data.share_index}
 
 
@@ -380,19 +362,16 @@ def delete_beneficiary(
     beneficiary_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)
 ):
     vault = _get_vault(db, current_user)
-
+    lock_status(db, vault.id)
+    db.refresh(vault)
     entry = (
         db.query(Beneficiary)
         .filter(Beneficiary.id == beneficiary_id, Beneficiary.vault_id == vault.id)
         .first()
     )
-
     if not entry:
         raise HTTPException(status_code=404, detail="Beneficiary not found")
-
+    revoke_beneficiary(db, entry)
+    record_audit(db, vault.id, "owner", current_user.id, "beneficiary.delete", {})
     db.delete(entry)
     db.commit()
-    try:
-        log_audit("beneficiary.delete", "owner", current_user.id, vault.id)
-    except Exception:
-        pass

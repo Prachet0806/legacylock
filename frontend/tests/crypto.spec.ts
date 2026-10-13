@@ -1,6 +1,54 @@
 import { test, expect } from "@playwright/test";
-import { encryptMessage, decryptMessage, createWrappedVmk, unlockVMK, generateVMK, sha256Hex } from "../lib/crypto";
+import { encryptMessage, decryptMessage, createWrappedVmk, unlockVMK, generateVMK, sha256Hex, rewrapVMK } from "../lib/crypto";
 import { splitVMK, reconstructVMK } from "../lib/shamir";
+import * as session from "../lib/crypto-session";
+import {ownerFetch} from "../lib/api/transport";
+
+test("late response body from a previous session is discarded",async()=>{
+  const original=globalThis.fetch;
+  let readStarted!:()=>void,finish!: (value:string)=>void;
+  const started=new Promise<void>(resolve=>{readStarted=resolve;});
+  const body=new Promise<string>(resolve=>{finish=resolve;});
+  const response=new Response(null,{status:200});
+  response.text=async()=>{readStarted();return body;};
+  globalThis.fetch=async()=>response;
+  try {
+    const pending=ownerFetch("/vault/messages");
+    await started;
+    session.lockVault();
+    finish('[{"id":1,"label":"old identity"}]');
+    await expect(pending).rejects.toThrow(/Session changed/);
+  } finally {globalThis.fetch=original;}
+});
+
+test("passphrase rewrap preserves old encrypted messages and existing recovery quorum", async () => {
+  const {vmk, material} = await createWrappedVmk("old-passphrase-fixture-1234");
+  const shares = splitVMK(vmk, 2, 3);
+  const payload = await encryptMessage("rewrap must preserve this", vmk);
+  const next = await rewrapVMK(vmk, "new-passphrase-fixture-1234");
+  expect(await decryptMessage(payload, await unlockVMK("new-passphrase-fixture-1234", next))).toBe("rewrap must preserve this");
+  expect(await decryptMessage(payload, reconstructVMK(shares.slice(0,2),2))).toBe("rewrap must preserve this");
+  await expect(unlockVMK("old-passphrase-fixture-1234", next)).rejects.toThrow();
+  expect(material.wrapped_vmk_b64).not.toBe(next.wrapped_vmk_b64);
+});
+
+test("resharing does not cryptographically revoke a previous quorum", async () => {
+  const vmk=generateVMK();
+  const old=splitVMK(vmk,2,3), next=splitVMK(vmk,3,5);
+  const payload=await encryptMessage("historical quorum retains the key", vmk);
+  for(const raw of [reconstructVMK(old.slice(0,2),2),reconstructVMK(next.slice(0,3),3)]) {
+    expect(await decryptMessage(payload,raw)).toBe("historical quorum retains the key");
+  }
+});
+
+test("principal change locks the key and invalidates in-flight cryptography", async () => {
+  session.bindVault("owner:one",1);
+  await session.setupVault("session-fixture-passphrase-1234");
+  const pending=session.encrypt("delayed private body");
+  session.bindVault("beneficiary:two",1);
+  expect(session.isUnlocked()).toBe(false);
+  await expect(pending).rejects.toThrow(/Session changed/);
+});
 
 test("sha256Hex matches known vector", async () => {
   expect(await sha256Hex("abc")).toBe(

@@ -76,6 +76,14 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User | 
     if user_id <= 0:
         return None
     user = db.query(User).filter(User.id == user_id).first()
+    from services.sessions import valid_family
+
+    sid = payload.get("jti")
+    if sid:
+        if not valid_family(db, sid, "owner", user_id):
+            return None
+    elif get_settings().environment == "production":
+        return None
     return user
 
 
@@ -103,6 +111,43 @@ def get_current_beneficiary(request: Request, db: Session = Depends(get_db)) -> 
     if beneficiary_id <= 0:
         return None
     beneficiary = db.query(Beneficiary).filter(Beneficiary.id == beneficiary_id).first()
+    if beneficiary is None:
+        return None
+    # Lifecycle gate: only accepted beneficiaries hold usable sessions.
+    # Deleted rows already 401 via the lookup above.
+    if beneficiary.invitation_status != "accepted":
+        return None
+    from services.sessions import valid_family
+
+    family = (
+        valid_family(db, payload.get("jti"), "beneficiary", beneficiary_id)
+        if payload.get("jti")
+        else None
+    )
+    if family:
+        if (
+            family.contact_revision != beneficiary.contact_revision
+            or family.vault_id != beneficiary.vault_id
+        ):
+            return None
+        return beneficiary
+    from models import AuthSession
+
+    if payload.get("jti") and db.get(AuthSession, payload["jti"]):
+        return None
+    if get_settings().environment == "production":
+        return None
+    # Server-side revocation: if a jti is bound, the token must present it.
+    # A token presenting a jti with no bound counterpart was revoked.
+    # Tokens and rows both without jti are pre-hardening legacy — accepted
+    # until their next refresh binds one.
+    bound = getattr(beneficiary, "session_jti", None)
+    token_jti = payload.get("jti")
+    if bound:
+        if not token_jti or token_jti != bound:
+            return None
+    elif token_jti:
+        return None
     return beneficiary
 
 

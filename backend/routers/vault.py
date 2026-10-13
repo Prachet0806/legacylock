@@ -3,15 +3,15 @@ import json
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from deps import get_db, require_owner
-from logging_config import log_audit
 from models import MessageCategory, User, Vault, VaultMessage
+from services.audit import record_audit
 from services.auth import verify_password
+from services.trigger_service import lock_status
 
 router = APIRouter(
     prefix="/vault",
@@ -26,6 +26,7 @@ router = APIRouter(
 
 
 class MessageRequest(BaseModel):
+    material_revision: int = Field(..., ge=1)
     label: str = Field(..., min_length=1, max_length=200)
     ciphertext: str = Field(..., max_length=2_000_000)
     wrapped_mek: str = Field(..., max_length=100_000)
@@ -88,6 +89,7 @@ class MessageMeta(BaseModel):
     id: int
     label: str
     created_at: str
+    category: str | None = None
     model_config = {"from_attributes": True}
 
 
@@ -118,21 +120,17 @@ class CryptoMaterialResponse(BaseModel):
     vmk_kdf_algorithm: str | None
     vmk_kdf_salt: str | None
     vmk_kdf_parameters: dict | None
+    material_revision: int = 0
 
 
 class CryptoMaterialRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     wrapped_vmk: str = Field(..., min_length=1, max_length=100_000)
     vmk_crypto_version: Literal[1] = 1
     vmk_kdf_algorithm: Literal["PBKDF2-SHA256"] = "PBKDF2-SHA256"
     vmk_kdf_salt: str = Field(..., min_length=1, max_length=10_000)
     vmk_kdf_parameters: dict
-    # Optional per-vault Shamir policy (k-of-n). When omitted, existing policy
-    # is preserved (legacy default 2-of-3). When k/n change, a fresh
-    # recovery_generation (new ceremony) is required — policy metadata must
-    # never silently diverge from the distributed share set.
-    recovery_threshold: int | None = Field(None, ge=1, le=10)
-    recovery_total: int | None = Field(None, ge=1, le=10)
-    recovery_generation: str | None = Field(None, min_length=32, max_length=32)
+    expected_revision: int = Field(..., ge=0)
 
 
 class RecoveryPolicyRequest(BaseModel):
@@ -144,6 +142,8 @@ class RecoveryCeremonyRequest(BaseModel):
     recovery_threshold: int = Field(..., ge=1, le=10)
     recovery_total: int = Field(..., ge=1, le=10)
     recovery_generation: str = Field(..., min_length=32, max_length=32)
+    expected_revision: int = Field(..., ge=0)
+    initial_material: CryptoMaterialRequest | None = None
 
 
 class RecoveryPolicyResponse(BaseModel):
@@ -151,6 +151,54 @@ class RecoveryPolicyResponse(BaseModel):
     recovery_total: int
     recovery_generation: str | None = None
     recovery_status: str = "READY"
+    ceremony_id: int | None = None
+    material_revision: int = 0
+
+
+def validate_material(data):
+    _require_b64(data.wrapped_vmk, "wrapped_vmk", 40)
+    if len(base64.b64decode(data.wrapped_vmk, validate=True)) != 40:
+        raise HTTPException(422, "wrapped_vmk must encode a 40-byte AES-KW value")
+    _require_b64(data.vmk_kdf_salt, "vmk_kdf_salt", 16)
+    if len(base64.b64decode(data.vmk_kdf_salt, validate=True)) != 16:
+        raise HTTPException(422, "Salt must encode 16 bytes")
+    if data.vmk_kdf_parameters != {"iterations": 600_000}:
+        raise HTTPException(422, "Version 1 creation requires 600000 iterations")
+
+
+def apply_material(vault, data):
+    vault.wrapped_vmk = data.wrapped_vmk
+    vault.vmk_crypto_version = data.vmk_crypto_version
+    vault.vmk_kdf_algorithm = data.vmk_kdf_algorithm
+    vault.vmk_kdf_salt = data.vmk_kdf_salt
+    vault.vmk_kdf_parameters = json.dumps(data.vmk_kdf_parameters)
+    vault.material_revision += 1
+
+
+def writable(db, vault, expected=None):
+    vs = lock_status(db, vault.id)
+    db.refresh(vault)
+    if vs.state == "triggered":
+        raise HTTPException(
+            409, "Released vaults are read-only; export or deletion remain available"
+        )
+    if expected is not None and vault.material_revision != expected:
+        raise HTTPException(409, "Vault key material changed; unlock again")
+
+
+def validate_message(ciphertext, wrapped_mek, metadata):
+    _require_b64(ciphertext, "ciphertext", 1024 * 1024 + 16)
+    if len(base64.b64decode(ciphertext, validate=True)) < 16:
+        raise HTTPException(422, "Ciphertext must include a GCM authentication tag")
+    _require_b64(wrapped_mek, "wrapped_mek", 40)
+    if len(base64.b64decode(wrapped_mek, validate=True)) != 40:
+        raise HTTPException(422, "wrapped_mek must encode 40 bytes")
+    _check_metadata(metadata, "crypto_metadata")
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("iv"), str):
+        raise HTTPException(422, "Version 1 metadata requires an IV")
+    _require_b64(metadata["iv"], "iv", 12)
+    if len(base64.b64decode(metadata["iv"], validate=True)) != 12:
+        raise HTTPException(422, "IV must encode 12 bytes")
 
 
 # Exact KDF contract per crypto version — clients may not negotiate weaker
@@ -190,10 +238,10 @@ def save_message(
     db: Session = Depends(get_db),
 ):
     vault = _get_vault(db, current_user)
-
-    # Validate opaque blobs are base64 (fail fast, no silent corruption)
-    _require_b64(data.ciphertext, "ciphertext", 2_000_000)
-    _require_b64(data.wrapped_mek, "wrapped_mek", 100_000)
+    writable(db, vault, data.material_revision)
+    if not vault.wrapped_vmk:
+        raise HTTPException(409, "Finalize vault setup before saving messages")
+    validate_message(data.ciphertext, data.wrapped_mek, data.crypto_metadata)
 
     metadata_dict = dict(data.crypto_metadata) if data.crypto_metadata else {}
     _check_metadata(data.crypto_metadata, "crypto_metadata")
@@ -215,25 +263,28 @@ def save_message(
         coverage_tags=json.dumps(tags),
     )
     db.add(message)
+    record_audit(db, vault.id, "owner", current_user.id, "message.create", {})
     db.commit()
     db.refresh(message)
-    try:
-        log_audit("message.create", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
     return {"id": message.id, "message": "Message saved"}
 
 
 @router.get("/messages", response_model=list[MessageMeta])
 def list_messages(
+    before_id: int | None = Query(None, ge=1),
+    limit: int = Query(50, ge=1, le=100),
     current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
     vault = _get_vault(db, current_user)
     messages = (
-        db.query(VaultMessage)
+        db.query(
+            VaultMessage.id, VaultMessage.label, VaultMessage.created_at, VaultMessage.category
+        )
         .filter(VaultMessage.vault_id == vault.id)
-        .order_by(VaultMessage.created_at.desc())
+        .filter(VaultMessage.id < before_id if before_id else True)
+        .order_by(VaultMessage.id.desc())
+        .limit(limit)
         .all()
     )
     return [
@@ -241,6 +292,7 @@ def list_messages(
             id=m.id,
             label=m.label,
             created_at=m.created_at.isoformat() if m.created_at else "",
+            category=m.category,
         )
         for m in messages
     ]
@@ -302,14 +354,12 @@ def delete_message(
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
     db.delete(message)
+    record_audit(db, vault.id, "owner", current_user.id, "message.delete", {})
     db.commit()
-    try:
-        log_audit("message.delete", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
 
 
 class MessageUpdate(BaseModel):
+    material_revision: int | None = Field(None, ge=1)
     label: str | None = Field(None, min_length=1, max_length=200)
     ciphertext: str | None = Field(None, max_length=2_000_000)
     wrapped_mek: str | None = Field(None, max_length=100_000)
@@ -326,6 +376,14 @@ def update_message(
     db: Session = Depends(get_db),
 ):
     vault = _get_vault(db, current_user)
+    writable(db, vault, data.material_revision)
+    crypto_fields = {"ciphertext", "wrapped_mek", "crypto_metadata"}
+    if crypto_fields & data.model_fields_set:
+        if not crypto_fields <= data.model_fields_set or data.material_revision is None:
+            raise HTTPException(
+                422, "Crypto replacement requires complete envelope and material revision"
+            )
+        validate_message(data.ciphertext, data.wrapped_mek, data.crypto_metadata)
     message = (
         db.query(VaultMessage)
         .filter(VaultMessage.id == message_id, VaultMessage.vault_id == vault.id)
@@ -341,8 +399,8 @@ def update_message(
     if data.label is not None:
         message.label = data.label
 
-    if data.category is not None:
-        if data.category not in MESSAGE_CATEGORIES:
+    if "category" in data.model_fields_set:
+        if data.category is not None and data.category not in MESSAGE_CATEGORIES:
             raise HTTPException(status_code=422, detail="Invalid category")
         message.category = data.category
 
@@ -362,11 +420,8 @@ def update_message(
         message.crypto_metadata = json.dumps(dict(data.crypto_metadata))
 
     message.updated_at = datetime.now(UTC)
+    record_audit(db, vault.id, "owner", current_user.id, "message.update", {})
     db.commit()
-    try:
-        log_audit("message.update", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
     return {"id": message.id, "message": "Message updated"}
 
 
@@ -386,11 +441,8 @@ def wipe_vault(
         raise HTTPException(status_code=401, detail="Invalid password")
     vault = _get_vault(db, current_user)
     db.query(VaultMessage).filter(VaultMessage.vault_id == vault.id).delete()
+    record_audit(db, vault.id, "owner", current_user.id, "vault.wipe", {})
     db.commit()
-    try:
-        log_audit("vault.wipe", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +471,7 @@ def get_crypto_material(
         vmk_kdf_algorithm=vault.vmk_kdf_algorithm,
         vmk_kdf_salt=vault.vmk_kdf_salt,
         vmk_kdf_parameters=params,
+        material_revision=vault.material_revision,
     )
 
 
@@ -454,92 +507,15 @@ def save_crypto_material(
     current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """Save wrapped VMK and KDF metadata (initial setup or passphrase change).
-
-    This is the explicit vault-provisioning step: it creates the owner's
-    primary vault if none exists (login deliberately does not).
-    """
-    vault = (
-        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
-    )
-    if not vault:
-        vault = Vault(user_id=current_user.id, name="Primary Vault", is_primary=True)
-        db.add(vault)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            vault = (
-                db.query(Vault)
-                .filter(Vault.user_id == current_user.id, Vault.is_primary == True)
-                .first()
-            )
-            if not vault:
-                raise
-        db.refresh(vault)
-
-    _require_b64(data.wrapped_vmk, "wrapped_vmk", 100_000)
-    _require_b64(data.vmk_kdf_salt, "vmk_kdf_salt", 10_000)
-    _check_metadata(data.vmk_kdf_parameters, "vmk_kdf_parameters", max_keys=10, max_serialized=2000)
-    contract = KDF_CONTRACTS.get(data.vmk_crypto_version)
-    if contract is None:
-        raise HTTPException(status_code=422, detail="Unsupported crypto version")
-    if data.vmk_kdf_algorithm != contract["algorithm"]:
-        raise HTTPException(status_code=422, detail="KDF algorithm mismatch for crypto version")
-    if data.vmk_kdf_parameters.get("iterations") != contract["iterations"]:
-        raise HTTPException(status_code=422, detail="KDF iterations mismatch for crypto version")
-    try:
-        salt_len = len(base64.b64decode(data.vmk_kdf_salt, validate=True))
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail="vmk_kdf_salt must be valid base64") from exc
-    if salt_len != contract["salt_bytes"]:
-        raise HTTPException(status_code=422, detail="KDF salt length mismatch for crypto version")
-
-    if data.recovery_threshold is not None or data.recovery_total is not None:
-        k = data.recovery_threshold if data.recovery_threshold is not None else _policy_of(vault)[0]
-        n = data.recovery_total if data.recovery_total is not None else _policy_of(vault)[1]
-        _validate_policy(k, n)
-        _ensure_policy_fits_assignments(db, vault, n)
-        cur_k, cur_n = _policy_of(vault)
-        if (k, n) != (cur_k, cur_n) or (
-            vault.recovery_generation and data.recovery_generation != vault.recovery_generation
-        ):
-            # New or changed policy must arrive with a fresh ceremony generation.
-            if not data.recovery_generation or not _valid_generation(data.recovery_generation):
-                raise HTTPException(
-                    status_code=409,
-                    detail="Policy change requires a fresh recovery_generation (new ceremony)",
-                )
-            if data.recovery_generation == (vault.recovery_generation or ""):
-                raise HTTPException(
-                    status_code=409,
-                    detail="recovery_generation reuse: generate a new ceremony",
-                )
-            vault.recovery_generation = data.recovery_generation.lower()
-            vault.recovery_status = "READY"
-        elif data.recovery_generation and not vault.recovery_generation:
-            if not _valid_generation(data.recovery_generation):
-                raise HTTPException(status_code=422, detail="Invalid recovery_generation")
-            vault.recovery_generation = data.recovery_generation.lower()
-            vault.recovery_status = "READY"
-        vault.recovery_threshold = k
-        vault.recovery_total = n
-
-    vault.wrapped_vmk = data.wrapped_vmk
-    vault.vmk_crypto_version = data.vmk_crypto_version
-    vault.vmk_kdf_algorithm = data.vmk_kdf_algorithm
-    vault.vmk_kdf_salt = data.vmk_kdf_salt
-    vault.vmk_kdf_parameters = json.dumps(data.vmk_kdf_parameters)
-    vault.updated_at = datetime.now(UTC)
-
+    validate_material(data)
+    vault = _get_vault(db, current_user)
+    writable(db, vault, data.expected_revision)
+    if not vault.wrapped_vmk:
+        raise HTTPException(409, "Initial setup requires a draft and finalization")
+    apply_material(vault, data)
+    record_audit(db, vault.id, "owner", current_user.id, "vault.rewrap", {})
     db.commit()
-    db.refresh(vault)
-    try:
-        log_audit("vault.crypto_material_save", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
-
-    return {"message": "Crypto material saved successfully"}
+    return {"message": "Wrapping bundle updated", "material_revision": vault.material_revision}
 
 
 def _valid_generation(g: str | None) -> bool:
@@ -564,7 +540,8 @@ def get_recovery_policy(
         recovery_threshold=k,
         recovery_total=n,
         recovery_generation=vault.recovery_generation,
-        recovery_status=vault.recovery_status or "READY",
+        recovery_status=vault.recovery_status or "LEGACY",
+        material_revision=vault.material_revision,
     )
 
 
@@ -574,47 +551,34 @@ def post_recovery_ceremony(
     current_user: User = Depends(require_owner),
     db: Session = Depends(get_db),
 ):
-    """Commit a client-side recovery ceremony: new generation binds policy to shares.
+    from services.ceremony import create_draft
 
-    The server never sees raw shares — only (generation, k, n). Generation must
-    be fresh (never reused) so old share sets cannot be confused with the new one.
-    """
-    from models import Vault as VaultModel
+    return create_draft(db, current_user, data)
 
-    vault = (
-        db.query(VaultModel)
-        .filter(VaultModel.user_id == current_user.id, VaultModel.is_primary == True)
-        .first()
-    )
-    if not vault:
-        vault = VaultModel(user_id=current_user.id, name="Primary Vault", is_primary=True)
-        db.add(vault)
-        db.commit()
-        db.refresh(vault)
-    _validate_policy(data.recovery_threshold, data.recovery_total)
-    _ensure_policy_fits_assignments(db, vault, data.recovery_total)
-    gen = data.recovery_generation.lower()
-    if not _valid_generation(gen):
-        raise HTTPException(status_code=422, detail="Invalid recovery_generation")
-    if gen == (vault.recovery_generation or ""):
-        raise HTTPException(status_code=409, detail="recovery_generation reuse: generate a new one")
-    vault.recovery_threshold = data.recovery_threshold
-    vault.recovery_total = data.recovery_total
-    vault.recovery_generation = gen
-    vault.recovery_status = "READY"
-    vault.updated_at = datetime.now(UTC)
-    db.commit()
-    db.refresh(vault)
-    try:
-        log_audit("vault.recovery_ceremony", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
-    return RecoveryPolicyResponse(
-        recovery_threshold=vault.recovery_threshold,
-        recovery_total=vault.recovery_total,
-        recovery_generation=vault.recovery_generation,
-        recovery_status=vault.recovery_status,
-    )
+
+class CeremonyFinalize(BaseModel):
+    stored_indexes: list[int] = Field(..., max_length=10)
+
+
+@router.post("/recovery-ceremony/{ceremony_id}/finalize")
+def finalize_ceremony(
+    ceremony_id: int,
+    data: CeremonyFinalize,
+    current_user: User = Depends(require_owner),
+    db: Session = Depends(get_db),
+):
+    from services.ceremony import finalize
+
+    return finalize(db, current_user, ceremony_id, data.stored_indexes)
+
+
+@router.delete("/recovery-ceremony/{ceremony_id}")
+def cancel_ceremony(
+    ceremony_id: int, current_user: User = Depends(require_owner), db: Session = Depends(get_db)
+):
+    from services.ceremony import cancel
+
+    return cancel(db, current_user, ceremony_id)
 
 
 @router.put("/recovery-policy", response_model=RecoveryPolicyResponse)
@@ -635,10 +599,7 @@ def put_recovery_policy(
         db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
     )
     if not vault:
-        vault = Vault(user_id=current_user.id, name="Primary Vault", is_primary=True)
-        db.add(vault)
-        db.commit()
-        db.refresh(vault)
+        raise HTTPException(404, "Vault not found; start a recovery ceremony")
     _validate_policy(data.recovery_threshold, data.recovery_total)
     cur_k, cur_n = _policy_of(vault)
     if (data.recovery_threshold, data.recovery_total) != (cur_k, cur_n):
@@ -647,14 +608,13 @@ def put_recovery_policy(
             detail="Policy change requires POST /vault/recovery-ceremony with a fresh generation",
         )
     _ensure_policy_fits_assignments(db, vault, data.recovery_total)
-    vault.updated_at = datetime.now(UTC)
-    db.commit()
-    db.refresh(vault)
+    # The compatibility endpoint is a read-only no-op, including after release.
     return RecoveryPolicyResponse(
         recovery_threshold=vault.recovery_threshold,
         recovery_total=vault.recovery_total,
         recovery_generation=vault.recovery_generation,
-        recovery_status=vault.recovery_status or "READY",
+        recovery_status=vault.recovery_status or "LEGACY",
+        material_revision=vault.material_revision,
     )
 
 

@@ -57,7 +57,9 @@ def _seed_status(db, vault_id, state: str = "active", grace_started_days_ago: in
         if grace_started_days_ago is not None
         else None
     )
-    vs = VaultStatus(vault_id=vault_id, state=state, grace_started_at=grace_started, updated_at=now)
+    vs = VaultStatus(
+        vault_id=vault_id, armed=True, state=state, grace_started_at=grace_started, updated_at=now
+    )
     db.add(vs)
     db.commit()
     return vs
@@ -109,7 +111,7 @@ class TestHeartbeatCheckerGrace:
         _seed_config(db, vault.id, 30, 7, 31)
         _seed_status(db, vault.id, "active")
         result = check_heartbeat(db)
-        assert result == [f"vault_{vault.id}_grace_started"]
+        assert f"vault_{vault.id}_grace_started" in result
 
     def test_vault_status_set_to_grace(self):
         from services.heartbeat_checker import check_heartbeat

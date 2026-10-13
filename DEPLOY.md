@@ -1,260 +1,56 @@
-# LegacyLock — Production Deployment Guide (Side Project)
+# LegacyLock deployment contract
 
-Target: **single VPS + Vercel + managed DNS, email-only notifications**.
-This is a side project with no scale expectations (~$6–16/month).
+Production activation is gated by [the implementation record](docs/remediation-implementation.md), [operations runbook](docs/remediation-operations.md) and [dependency exceptions](docs/dependency-exceptions.md). Local tests do not establish real email delivery, HTTPS cookie behavior, managed backup objectives, capacity or independent cryptographic review.
 
-```
-Browser → https://app.example.com (Vercel, Next.js)
-            └─ /api/* ──rewrite──▶ https://api.example.com/* (VPS, Caddy → backend:8000)
-                                   (prefix stripped — backend routes are unversioned)
+## Topology and artifact
 
-VPS (Docker Compose): Caddy (TLS) + backend (FastAPI, exactly 1 instance) + Postgres
-Email: Resend (free tier). SMS: intentionally disabled (mock-logged).
-```
+Browser → HTTPS application origin → same-origin `/api/*` rewrite → FastAPI → PostgreSQL 17. A separate recovery worker owns checker passes and delivery attempts. Keep one API instance while rate limits use process-local buckets. Rolling replacement also needs edge enforcement if the limit must span old/new instances. Never trust arbitrary forwarded headers to improve client-IP attribution.
 
-Same-origin `/api` is preserved via Vercel rewrites so `SameSite=Lax`
-HttpOnly cookies keep working. Do NOT call the API origin directly from the
-browser — split-origin (`NEXT_PUBLIC_API_URL=https://api...`) is untested and
-breaks cookie auth (would require `SameSite=None`; see Known limits).
+Build immutable frontend/backend images from the reviewed tree. Targets are Python 3.12.14 and Node 22.23.3; install locked dependencies. The frontend builder consumes `NEXT_PUBLIC_API_URL=/api` and `API_UPSTREAM=<backend origin>` and the runner serves `server.js` with `.next/static` colocated. Rewrite destinations are build inputs. On Vercel replace the example destination in `frontend/vercel.json`; keep `/api` and `Referrer-Policy: no-referrer`.
 
-Assumes: `main` is green in CI (pytest, lint, typecheck, build, E2E, images).
+`render.yaml` contains an API web service, independent worker and managed PostgreSQL. Replace example domains, fill secret-store settings, mount JWT files in the dashboard and run `render blueprints validate render.yaml` against the intended Render account/CLI before creation. YAML parsing alone does not validate platform schema or secret mounts. Auto deployment is disabled for coordinated migration and sender cutover.
 
----
+## Required configuration
 
-## 0. What you need (~30 min one-time)
-
-- A VPS (Hetzner CX22 / DigitalOcean 2GB / Linode 2GB class, ~$5–10/mo)
-  with Docker + Docker Compose plugin installed.
-- A domain managed in Cloudflare (free DNS + proxy optional).
-- A Vercel account (free tier) + Resend account (free tier, 3k emails/mo).
-- `openssl` locally for secret generation.
-
-### 0.1 DNS
-
-| Host | Target | Notes |
-|---|---|---|
-| `app.example.com` | Vercel (CNAME per Vercel domain docs) | Frontend |
-| `api.example.com` | VPS public IP (A record, DNS-only during first Caddy issuance, proxy OK after) | Backend |
-
-TLS:
-- `app.*`: automatic via Vercel.
-- `api.*`: automatic via Caddy (ACME HTTP/TLS-ALPN on ports 80/443).
-  All traffic below assumes HTTPS.
-
-### 0.2 Resend (chosen over SendGrid — see why below)
-
-1. Create a Resend API key (free tier: 3,000 emails/mo).
-2. Add + verify your sending domain in Resend (apex or `mail.` subdomain):
-   add the SPF/DKIM TXT records Resend shows you, wait for Verified.
-3. Set sender to something on that domain, e.g. `noreply@example.com`.
-   Sandbox senders (`onboarding@resend.dev`) only deliver to your own
-   Resend account address — fine for staging, not for prod.
-
-> Why Resend over SendGrid: same free-tier volume (3k/mo), cheaper paid tier
-> ($10 vs $19.95 per 50k), simpler API, and the backend already integrates
-> Resend (`services/notifications.py`). Pick SendGrid only if you need its
-> advanced analytics, HIPAA certs, or enterprise support.
-
-### 0.3 Secrets — generate once, keep on the VPS only
-
-```bash
-openssl rand -base64 48                                   # SESSION_SECRET
-openssl genrsa -out jwt_private.pem 2048                  # JWT signing key
-openssl rsa -in jwt_private.pem -pubout -out jwt_public.pem
-openssl rand -hex 16                                      # REGISTRATION_INVITE_CODE
-```
-
-Never commit these. Never reuse dev keys. Required values on the VPS:
-
-| Name | Value |
+| Setting | Contract |
 |---|---|
-| `SESSION_SECRET` | rand output (≥32 chars, enforced) |
-| `DATABASE_URL` | `postgresql+psycopg://legacylock:<strong-pw>@postgres:5432/legacylock_prod` |
-| `POSTGRES_PASSWORD` | strong password for the Compose Postgres service |
-| `JWT_PRIVATE_KEY_PATH` | `/run/secrets/jwt_private.pem` (mounted file) |
-| `JWT_PUBLIC_KEY_PATH` | `/run/secrets/jwt_public.pem` |
-| `ALLOWED_ORIGINS` | `https://app.example.com` |
-| `FRONTEND_URL` | `https://app.example.com` |
-| `ENVIRONMENT` | `production` |
-| `TRUSTED_PROXIES` / `FORWARDED_ALLOW_IPS` | empty on single VPS (Caddy is local); set only if Cloudflare-proxied headers are trusted |
-| `HEARTBEAT_ENABLED` | `true` |
-| `REGISTRATION_INVITE_CODE` | rand-hex (gated signup; empty = disabled, fail-closed) |
-| `RESEND_API_KEY` | `re_...` (empty = mock-log; prod must be set or notifications silently no-op) |
-| `NOTIFICATION_EMAIL_FROM` | `noreply@example.com` (must be on your verified Resend domain) |
+| `ENVIRONMENT` | `production` on API and worker |
+| `DATABASE_URL` | Intended PostgreSQL URL with platform-required TLS; backed up and isolated from test databases |
+| `SESSION_SECRET` | Dedicated random value, at least 32 characters |
+| `AUTH_EPOCH` | Deployment-wide identifier, synchronized on API/worker; replace after restoration |
+| JWT files | Corresponding RSA private/public PEM pair, at least 2048 bits. API validates correspondence at startup. Render paths: `/etc/secrets/jwt_private.pem` and `/etc/secrets/jwt_public.pem`. Worker needs neither file |
+| `DELIVERY_PAYLOAD_KEY` | Separate random 32-byte base64 AES-GCM key, backed up outside the database |
+| `DELIVERY_PAYLOAD_KEY_ID`, `DELIVERY_PAYLOAD_KEYS` | Current version and secret JSON ring of retained older versions; do not retire a version with live/retained payloads |
+| `ALLOWED_ORIGINS`, `FRONTEND_URL` | Exact application HTTPS origin; no wildcard or `null` |
+| `ALLOWED_HOSTS` | Actual API hostnames, including platform health/rewrite host |
+| `TRUSTED_PROXIES` | Verified direct-peer and forwarding-chain CIDRs only. Start Uvicorn with `--no-proxy-headers`; the application owns trust parsing |
+| `BACKGROUND_IN_API` | `false` with the separate worker |
+| `HEARTBEAT_ENABLED` | `true` for recovery checking |
+| `RELEASE_HOLD` | Initially `true` on both processes; release only after reconciliation and evidence review |
+| `DELIVERY_ENABLED` | `false` during restore quarantine; enable deliberate delivery after reconciliation |
+| `RESEND_API_KEY`, `NOTIFICATION_EMAIL_FROM` | Real verified sender/account; missing email credentials fail production startup. Verify domain, quota and delivery using a controlled recipient |
+| `OPERATIONS_TOKEN` | Separate random credential for the restricted recovery-health monitor |
+| `REGISTRATION_INVITE_CODE` | Out-of-band operator enrollment code; empty disables registration |
+| `SMS_ENABLED` | `false` unless SMS credentials, recipient preferences and delivery are separately qualified |
 
-Email-only by design: leave `TWILIO_*` unset. SMS stays mock-logged and no
-SMS is ever required for grace/trigger flows.
+Host-only HttpOnly cookies are `Secure` in production, `SameSite=Lax` and scoped to the application path through `/api`. Qualify login, refresh, logout and both role cookies on the actual HTTPS hostname. A localhost test cannot verify Secure cookie transport through a hosted proxy.
 
----
+`scripts/deploy-qualify.sh --api <HTTPS API> --app <HTTPS app> --expect-hsts` performs anonymous routing/origin/health checks. For a controlled owner fixture, supply `--owner-email` and inject `QUALIFY_OWNER_PASSWORD` privately; the authenticated phase uses the app's `/api` path for login, refresh and logout. It does not trigger or wipe a vault. This script is only one qualification component and has not been run against a hosted deployment here.
 
-## 1. VPS services
+## Migration and sole sender
 
-Run exactly these on the VPS (see example below — adapt paths to your host):
+1. Capture artifact/commit identifiers, sanitized data inventory and a tested encrypted backup plus separate configuration/key inventory. Preserve release and delivery evidence.
+2. Stop the legacy checker/sender. Put both new processes in release hold; restore operations also disable delivery entirely. Confirm only the selected sender can contact the provider.
+3. Let the API release job alone run `alembic upgrade head` through `0008_delivery_attempts`. App startup does not migrate in production. Deploy the worker only after migration succeeds.
+4. Review legacy wrapping/envelope anomalies without overwriting encrypted bytes. `LEGACY` means compatible historical material, not demonstrated readiness. Existing recorded check-ins backfill arming; empty vaults remain uninitialized.
+5. Under hold run `python ops.py --adopt-legacy-release-evidence`. Previously released vaults get reconciliation evidence and dead-letter jobs; the tool never resends old notices. Review old provider IDs and timestamps before any operator-approved new notification.
+6. Record the deployed hold with `python ops.py --record-hold`. Prove checker/delivery checkpoints, exact origin/proxy/Host rules, nonce hydration/navigation and redaction at application/platform sinks.
+7. Enable delivery deliberately, run controlled registration, invitation, fresh beneficiary sign-in and release/recovery journeys with real email. Remove release hold only after evidence review; record the resulting hold configuration again.
 
-```yaml
-# docker-compose.prod.yml (example — keep this file on the VPS, not in git
-# if it ever contains real secrets; prefer an env file with chmod 600)
-services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: legacylock
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: legacylock_prod
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
+Migrations 0006–0008 preserve encrypted bytes and reject destructive downgrades. A pre-remediation application is not an automatic rollback target: it can ignore holds and lack the new transaction/session contracts. On regression, restore the hold, stop sending, retain expanded schema and use a compatible reviewed application or forward repair. Never restore a database under an old authentication epoch.
 
-  backend:
-    build: ./backend   # or image: registry.example.com/legacylock-backend:<sha>
-    environment:
-      ENVIRONMENT: production
-      DATABASE_URL: postgresql+psycopg://legacylock:${POSTGRES_PASSWORD}@postgres:5432/legacylock_prod
-      SESSION_SECRET: ${SESSION_SECRET}
-      ALLOWED_ORIGINS: https://app.example.com
-      FRONTEND_URL: https://app.example.com
-      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
-      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
-      HEARTBEAT_ENABLED: "true"
-      REGISTRATION_INVITE_CODE: ${REGISTRATION_INVITE_CODE}
-      RESEND_API_KEY: ${RESEND_API_KEY}
-      NOTIFICATION_EMAIL_FROM: ${NOTIFICATION_EMAIL_FROM}
-    secrets:
-      - jwt_private
-      - jwt_public
-    depends_on: [postgres]
-    restart: unless-stopped
+## Monitoring and release gates
 
-  caddy:
-    image: caddy:2-alpine
-    ports: ["80:80", "443:443"]
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on: [backend]
-    restart: unless-stopped
+`/health` proves process liveness; `/readyz` proves database connectivity. Restricted `/operations/recovery` distinguishes stale/error checkpoints, release holds, overdue jobs, expired leases, dead letters, pending-release lag and recent provider attempt outcomes. Recovery degradation must alert without taking owner check-in routes offline. Configure monitor authorization privately and verify an actual alert recipient; configuration documents are not evidence that alerts are wired.
 
-secrets:
-  jwt_private:
-    file: ./keys/jwt_private.pem
-  jwt_public:
-    file: ./keys/jwt_public.pem
-
-volumes:
-  postgres_data:
-  caddy_data:
-  caddy_config:
-```
-
-```caddyfile
-# Caddyfile (on the VPS alongside the compose file)
-api.example.com {
-    # Strip /api only if clients ever send it; Vercel already strips it.
-    # Backend routes are unversioned: /auth/*, /vault/*, /health, /readyz, ...
-    reverse_proxy backend:8000
-}
-```
-
-Notes:
-- Backend runs as **exactly 1 instance** (in-process heartbeat loop +
-  in-memory rate buckets — do not scale out).
-- `keys/` is dockerignored from the image; keys arrive via Compose secrets.
-- Uvicorn must run with `--proxy-headers` (already the Dockerfile default)
-  since Caddy terminates TLS.
-- Keep the dev `docker-compose.yml` services (`pgadmin`) out of prod.
-
-## 2. Database migration (runs BEFORE the new backend starts)
-
-```bash
-# One-shot, on the VPS, with prod env + secrets loaded:
-docker compose -f docker-compose.prod.yml run --rm backend alembic upgrade head
-# Expected: ... -> 0001_initial (+ any later heads), no errors.
-```
-
-Never run migrations from app boot and never `init_db` in production
-(the app skips it when `ENVIRONMENT=production`).
-
-## 3. Frontend on Vercel
-
-1. Import the repo's `frontend/` directory as a Vercel project.
-2. Production Environment Variables in Vercel:
-   - `NEXT_PUBLIC_API_URL=` (empty string = same-origin `/api`, required).
-     It is BAKED IN at build time — changing it requires a redeploy.
-3. Add `vercel.json` to `frontend/` so `/api` stays same-origin
-   (this is what keeps `SameSite=Lax` cookies working):
-
-```json
-{
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "https://api.example.com/:path*" }
-  ]
-}
-```
-
-> `next.config.mjs` only rewrites `/api` in dev; production relies on this
-> edge rewrite. The `:path*` destination strips the prefix (backend is
-> unversioned).
-
-4. Assign `app.example.com` to the Vercel project; wait for TLS to go green.
-5. Every PR gets a preview URL automatically — point previews at staging
-   (or accept that `/api` rewrite hits prod; prefer a staging backend).
-
-## 4. Backups (cheap, good enough for a side project)
-
-```bash
-# Nightly cron on the VPS (adjust paths):
-0 3 * * * docker exec legacylock-postgres-1 pg_dump -U legacylock legacylock_prod | gzip > /root/backups/legacylock-$(date +\%F).sql.gz && find /root/backups -mtime +14 -delete
-```
-
-- Optionally `rclone copy` the dump to R2/S3 (~$0.01/mo).
-- Do one restore drill to a scratch DB before going live, then quarterly.
-
-## 5. Smoke test
-
-1. `GET https://api.example.com/health` → 200 (via Caddy).
-   `GET https://api.example.com/readyz` → 200 (DB-checked).
-   `GET https://app.example.com/api/health` → 200 (via Vercel rewrite).
-2. Gated signup: `POST /auth/register` with `REGISTRATION_INVITE_CODE` →
-   verify link from Resend → login at `/`, confirm `Secure` HttpOnly cookies.
-   Negative: login before verification → `403`.
-3. Golden path: setup → 1–3 messages → beneficiaries → trigger → 2-share
-   recovery → plaintext matches (mirror of
-   `tests/zero_knowledge_network_boundary.spec.ts`).
-4. Negative checks: `POST /vault/shares` → 404, raw `share` field → 422,
-   weak KDF iterations → 422, cross-tenant message id → 404, wrong `Origin` → 403.
-5. Prod CSP on HTML includes your prod origin in `connect-src`; cookies are
-   `Secure`. Confirm Resend dashboard shows deliveries (not mock-logs).
-
-## 6. Operate
-
-- Logs: `docker compose -f docker-compose.prod.yml logs -f backend` (+ optional
-  Uptime Kuma on the VPS polling `/readyz`).
-- Updates: `git pull` → rebuild backend image → `alembic upgrade head` →
-  `up -d`. Frontend: push to `main` → Vercel auto-deploys.
-- Rotation (manual, ~yearly): new `SESSION_SECRET`/JWT pair → restart;
-  refresh families re-mint on next use. Treat any exposed private key as
-  compromised and rotate immediately.
-
-## Rollback
-
-- Backend: redeploy the previous image/git SHA (`up -d --force-recreate`).
-- Frontend: Vercel → Deployments → Promote previous production deployment.
-- Migrations are additive-only: rolling back code never requires rolling back
-  the database. If a migration ever drops something, write its rollback plan
-  before shipping.
-
-## Known limits (accepted for a side project — fix properly only if it grows)
-
-- Backend is single-instance (heartbeat + rate limits are in-process).
-  No failover; deploys cause brief downtime.
-- Email-only notifications. SMS stays mock-logged until `TWILIO_*` is
-  configured (not planned).
-- No `SameSite=None` support: direct cross-origin API calls are unsupported;
-  always go through the same-origin `/api` rewrite.
-- No password/account recovery (by design — users who lose login or vault
-  passphrase are locked out). Manual JWT/secret rotation only.
-- No audit-log UI, metrics stack, or read replicas — use DB shell, `docker
-  logs`, and Uptime Kuma.
-- Remaining `npm audit` critical is Next.js itself (no 14.x fix; affected
-  features — Image Optimizer/rewrites — are unused).
+The CI workflow runs SQLite/PostgreSQL suites, production browser journeys, dependency/quality gates and image asset checks. Qualify actual built images, Render Blueprint, secret mounts, HTTPS `/api` routing, real providers, recovery alerts, managed restore and an independent cryptographic review before production activation. Load-test the expected inventory to establish capacity and measured processing budget. Proposed RPO 15 minutes/RTO four hours remain targets until a managed restore demonstrates them.

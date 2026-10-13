@@ -23,9 +23,15 @@ const config: Config = {
         mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       borderRadius: {
-        sm: "6px",
-        md: "10px",
+        sm: "8px",
+        md: "12px",
         lg: "16px",
+        xl: "20px",
+        "2xl": "24px",
+      },
+        boxShadow: {
+        vault: "0 1px 0 rgb(255 255 255 / 0.04) inset, 0 24px 64px -24px rgb(0 0 0 / 0.7)",
+        card: "0 1px 0 rgb(255 255 255 / 0.03) inset, 0 12px 32px -16px rgb(0 0 0 / 0.6)",
       },
     },
   },

@@ -6,8 +6,66 @@ Falls back to logging when credentials are not configured.
 
 import html as _html
 import logging
+from dataclasses import dataclass
 
 logger = logging.getLogger("legacylock.notifications")
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    accepted: bool
+    retryable: bool = False
+    code: str | None = None
+    provider_id: str | None = None
+    retry_after: int | None = None
+
+
+async def deliver_email(to: str, subject: str, body: str, idempotency_key: str) -> DeliveryResult:
+    import httpx
+
+    from config import get_settings
+
+    api_key, email_from = _email_config()
+    if not api_key:
+        if get_settings().environment == "production":
+            return DeliveryResult(False, False, "email_not_configured")
+        logger.info("Development email suppressed (body and credentials omitted)")
+        return DeliveryResult(True, provider_id="development-suppressed")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {api_key}", "Idempotency-Key": idempotency_key},
+                json={"from": email_from, "to": [to], "subject": subject, "text": body},
+            )
+        if response.status_code in (200, 201, 202):
+            try:
+                provider_id = response.json().get("id")
+            except ValueError:
+                provider_id = None
+            return DeliveryResult(True, provider_id=provider_id)
+        retry = response.status_code in (408, 409, 429) or response.status_code >= 500
+        retry_after = response.headers.get("Retry-After", "")
+        return DeliveryResult(
+            False,
+            retry,
+            f"email_http_{response.status_code}",
+            retry_after=int(retry_after) if retry_after.isdigit() else None,
+        )
+    except (httpx.TimeoutException, httpx.NetworkError):
+        return DeliveryResult(False, True, "email_outcome_uncertain")
+
+
+async def deliver_sms(to: str, body: str, idempotency_key: str) -> DeliveryResult:
+    from config import get_settings
+
+    if not get_settings().sms_enabled:
+        return DeliveryResult(False, False, "sms_disabled")
+    # Twilio Messages has no assumed send-idempotency guarantee. Uncertain
+    # requests require operator reconciliation rather than automatic duplicates.
+    ok = await send_sms(to, body)
+    return DeliveryResult(ok, False, None if ok else "sms_reconcile_required")
+
 
 # ---------------------------------------------------------------------------
 # Email — Resend (config read lazily via _email_config for testability)
@@ -42,8 +100,10 @@ async def send_email(to: str, subject: str, body: str, html_body: str | None = N
     """Send an email via Resend. Returns True on success."""
     api_key, email_from = _email_config()
     if not api_key:
-        logger.info("[MOCK EMAIL] to=%s subject=%s", _redact(to), subject)
-        return True
+        from config import get_settings
+
+        logger.info("Email suppressed: credentials unavailable (content omitted)")
+        return get_settings().environment != "production"
 
     try:
         import httpx
@@ -88,8 +148,8 @@ async def send_sms(to: str, message: str) -> bool:
     token = _os.environ.get("TWILIO_AUTH_TOKEN", "")
     from_number = _os.environ.get("TWILIO_FROM_NUMBER", "")
     if not sid or not token:
-        logger.info("[MOCK SMS] to=%s", _redact(to))
-        return True
+        logger.warning("SMS unavailable: credentials missing")
+        return False
 
     try:
         import httpx

@@ -11,8 +11,9 @@ from pathlib import Path
 # Must be set before any application imports
 os.environ["ENVIRONMENT"] = "test"
 os.environ["SESSION_SECRET"] = "test-secret-key-for-testing-only-32b-0123456789"
-os.environ["DATABASE_URL"] = (
-    "postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_test"
+os.environ["DATABASE_URL"] = os.environ.get(
+    "TEST_DATABASE_URL",
+    ("postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_test"),
 )
 os.environ["ALLOWED_ORIGINS"] = "http://localhost:3000"
 os.environ["HEARTBEAT_CHECK_INTERVAL"] = "999999"
@@ -32,16 +33,18 @@ if str(BACKEND_DIR) not in sys.path:
 
 # File-backed SQLite for the whole test session so Alembic (a separate
 # engine) shares state with the app. Set BEFORE app imports.
+# USE_POSTGRES=1 (CI parity job) keeps the real Postgres DATABASE_URL.
 import tempfile as _tempfile  # noqa: E402
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 
-_tmp = _tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-_tmp.close()
-os.environ["SQLITE_FILE"] = _tmp.name
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmp.name}"
+if os.environ.get("USE_POSTGRES") != "1":
+    _tmp = _tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    _tmp.close()
+    os.environ["SQLITE_FILE"] = _tmp.name
+    os.environ["DATABASE_URL"] = f"sqlite:///{_tmp.name}"
 
 from alembic.config import Config as _AlembicConfig  # noqa: E402
 
@@ -51,7 +54,7 @@ from db import Base, engine  # noqa: E402
 from deps import get_db  # noqa: E402
 from main import app  # noqa: E402
 from models import User, Vault  # noqa: E402
-from services.auth import create_access_token, hash_password  # noqa: E402
+from services.auth import hash_password  # noqa: E402
 
 
 def _upgrade_test_schema() -> None:
@@ -100,12 +103,27 @@ def auth(client):
         db.commit()
         db.refresh(user)
 
-        vault = Vault(user_id=user.id, name="Primary Vault")
+        import base64
+
+        vault = Vault(
+            user_id=user.id,
+            name="Primary Vault",
+            wrapped_vmk=base64.b64encode(b"v" * 40).decode(),
+            vmk_crypto_version=1,
+            vmk_kdf_algorithm="PBKDF2-SHA256",
+            vmk_kdf_salt=base64.b64encode(b"s" * 16).decode(),
+            vmk_kdf_parameters='{"iterations":600000}',
+            material_revision=1,
+            recovery_status="LEGACY",
+        )
         db.add(vault)
         db.commit()
         db.refresh(vault)
 
-        access_token = create_access_token(user.id, vault.id, role="owner")
+        from services.sessions import issue
+
+        access_token, _ = issue(db, "owner", user.id, vault.id)
+        db.commit()
         return {"Authorization": f"Bearer {access_token}"}
     finally:
         db.close()
@@ -114,12 +132,25 @@ def auth(client):
 @pytest.fixture(autouse=True)
 def clean_db():
     """Wipe all rows before and after each test (schema persists)."""
+    from sqlalchemy import text
+
+    is_pg = engine.dialect.name == "postgresql"
+
+    def _wipe(conn):
+        if is_pg:
+            tables = ", ".join(
+                conn.dialect.identifier_preparer.format_table(t)
+                for t in reversed(Base.metadata.sorted_tables)
+            )
+            conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        else:
+            for table in reversed(Base.metadata.sorted_tables):
+                conn.execute(table.delete())
+
     with engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
+        _wipe(conn)
 
     yield
 
     with engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            conn.execute(table.delete())
+        _wipe(conn)

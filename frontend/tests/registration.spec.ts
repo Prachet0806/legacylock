@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { requireLiveBackend, requireOk } from "./e2e-guard";
 
 // Gated registration + email verification UI path. Uses the non-production
 // test-issue-verification endpoint as the mailbox (the raw token is
@@ -8,8 +9,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const INVITE_CODE = process.env.E2E_INVITE_CODE ?? "test-invite-code-123";
 
 test.beforeAll(async ({ request }) => {
-  const health = await request.get(`${API}/health`).catch(() => null);
-  test.skip(!health || !health.ok(), "registration spec needs a live backend");
+  await requireLiveBackend(request, "registration spec");
 });
 
 test("register -> verify -> login; wrong code rejected; pre-verify login blocked", async ({
@@ -41,20 +41,20 @@ test("register -> verify -> login; wrong code rejected; pre-verify login blocked
   await page.goto("/");
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
-  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByText(/not verified|verify/i).first()).toBeVisible({ timeout: 15000 });
 
   // --- Verify via the test mailbox endpoint ---
   const issue = await request.post(`${API}/auth/test-issue-verification`, {
     data: { email: EMAIL },
   });
-  // A backend without the invite code configured fails closed at register;
-  // skip (don't fail) so plain `npx playwright test` stays green there.
-  test.skip(!issue.ok(), "backend has no REGISTRATION_INVITE_CODE configured");
+  // A backend without the invite code configured fails closed at register.
+  await requireOk(issue, "backend has no REGISTRATION_INVITE_CODE configured");
   const link = ((await issue.json()) as { link: string }).link;
-  const token = new URL(link).searchParams.get("token") ?? "";
+  const token = new URLSearchParams(new URL(link).hash.slice(1)).get("token") ?? "";
   expect(token.length).toBeGreaterThan(10);
-  await page.goto(`/verify-email?token=${token}`);
+  await page.goto(`/verify-email#token=${token}`);
+  await page.getByRole("button",{name:"Confirm email verification"}).click();
   await expect(page.getByText("Verified. You can now log in.")).toBeVisible({ timeout: 15000 });
   // Credential must be scrubbed from the URL after use.
   await expect.poll(() => page.url(), { timeout: 15000 }).not.toContain("token=");
@@ -63,7 +63,7 @@ test("register -> verify -> login; wrong code rejected; pre-verify login blocked
   await page.goto("/");
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
-  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/home$/);
 
   // --- Resend cooldown is enumeration-safe (generic success, still unverified n/a) ---

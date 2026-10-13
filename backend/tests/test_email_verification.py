@@ -14,7 +14,6 @@ def _make_unverified(client):
     """
     import asyncio
 
-    import services.notifications as notifications
     from db import SessionLocal
     from models import User
     from services.email_verification import issue_verification
@@ -30,24 +29,18 @@ def _make_unverified(client):
     )
     assert r.status_code == 201
 
-    links = []
+    from models import DeliveryJob
+    from services.outbox import unprotect
 
-    async def fake(to, subject, body, html_body=None):
-        links.append(body)
-        return True
-
-    orig = notifications.send_email
-    notifications.send_email = fake  # type: ignore[method-assign]
-    try:
-        db = SessionLocal()
-        try:
-            user = db.query(User).filter(User.email == email).first()
-            raw = asyncio.run(issue_verification(db, user))
-        finally:
-            db.close()
-    finally:
-        notifications.send_email = orig  # type: ignore[method-assign]
-    assert links and raw in links[-1]
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == email).one()
+        raw = asyncio.run(issue_verification(db, user))
+        db.commit()
+        bodies = [
+            unprotect(job)["body"]
+            for job in db.query(DeliveryJob).filter(DeliveryJob.payload.isnot(None)).all()
+        ]
+        assert any(raw in body for body in bodies)
     return email, raw
 
 
@@ -70,9 +63,7 @@ class TestVerifyEmail:
         finally:
             db.close()
 
-        login = client.post(
-            "/auth/login", json={"email": email, "password": "VerifyPass123!Long"}
-        )
+        login = client.post("/auth/login", json={"email": email, "password": "VerifyPass123!Long"})
         assert login.status_code == 200
         me = client.get("/auth/me", headers=_bearer(client, email))
         assert me.json()["email_verified"] is True
@@ -120,6 +111,7 @@ class TestVerifyEmail:
         try:
             user = db.query(User).filter(User.email == email).first()
             raw2 = asyncio.run(issue_verification(db, user))
+            db.commit()
         finally:
             db.close()
         assert raw1 != raw2
@@ -140,9 +132,7 @@ class TestVerifyEmail:
 
 class TestResendVerification:
     def test_unknown_email_always_200(self, client):
-        r = client.post(
-            "/auth/resend-verification", json={"email": "ghost@example.com"}
-        )
+        r = client.post("/auth/resend-verification", json={"email": "ghost@example.com"})
         assert r.status_code == 200
         assert "verification" in r.json()["message"]
 
@@ -248,7 +238,7 @@ class TestIssueVerificationEndpoint:
         res = client.post("/auth/test-issue-verification", json={"email": email})
         assert res.status_code == 200
         link = res.json()["link"]
-        assert "/verify-email?token=" in link
+        assert "/verify-email#token=" in link
         raw = link.split("token=")[1]
         assert client.post("/auth/verify-email", json={"token": raw}).status_code == 200
 
@@ -261,6 +251,16 @@ class TestIssueVerificationEndpoint:
         assert client.post("/auth/verify-email", json={"token": raw}).status_code == 200
         res = client.post("/auth/test-issue-verification", json={"email": email})
         assert res.status_code == 404
+
+    def test_non_test_env_404(self, client):
+        from unittest.mock import patch
+
+        from config import get_settings
+
+        settings = get_settings()
+        with patch.object(settings, "environment", "development"):
+            res = client.post("/auth/test-issue-verification", json={"email": "a@example.com"})
+            assert res.status_code == 404
 
     def test_resend_cooldown_stays_generic(self, client):
         import uuid

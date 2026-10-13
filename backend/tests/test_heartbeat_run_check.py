@@ -23,7 +23,9 @@ class TestRunCheckValidation:
 class TestRunCheckAutoTrigger:
     def _setup(self, client, auth):
         assert (
-            client.put("/heartbeat", json={"interval_days": 30, "grace_days": 7}, headers=auth).status_code
+            client.put(
+                "/heartbeat", json={"interval_days": 30, "grace_days": 7}, headers=auth
+            ).status_code
             == 200
         )
         assert client.post("/heartbeat/checkin", headers=auth).status_code == 200

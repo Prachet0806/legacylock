@@ -5,14 +5,13 @@ logged, or returned by any other endpoint (same pattern as beneficiary
 invitation hashes).
 """
 
-import html as _html
 import secrets
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from config import get_settings
-from models import EmailVerificationToken, User
+from models import BusinessEvent, DeliveryJob, EmailVerificationToken, User
 from services.audit import record_audit
 from services.auth import hash_token
 
@@ -30,7 +29,7 @@ def verification_link(raw: str) -> str:
         origin = get_settings().frontend_origin()
     except Exception:
         origin = "http://localhost:3000"
-    return f"{origin}/verify-email?token={raw}"
+    return f"{origin}/verify-email#token={raw}"
 
 
 _RESEND_COOLDOWN = timedelta(minutes=5)
@@ -40,9 +39,7 @@ class VerificationCooldown(Exception):
     """Raised when a resend arrives inside the per-email cooldown window."""
 
 
-async def issue_verification(
-    db: Session, user: User, enforce_cooldown: bool = False
-) -> str:
+async def issue_verification(db: Session, user: User, enforce_cooldown: bool = False) -> str:
     """Create a fresh single-use token for user, email the link, return raw.
 
     Prior unconsumed tokens are revoked so only the newest link works.
@@ -52,7 +49,9 @@ async def issue_verification(
     Registration-time issuance never enforces the cooldown.
     Email-send failure is logged, not raised — the user can resend.
     """
-    from services.notifications import send_email
+    from services.outbox import enqueue, event
+
+    db.query(User).filter_by(id=user.id).with_for_update().one()
 
     if enforce_cooldown:
         latest = (
@@ -67,6 +66,15 @@ async def issue_verification(
                 created = created.replace(tzinfo=UTC)
             if datetime.now(UTC) - created < _RESEND_COOLDOWN:
                 raise VerificationCooldown("Verification email cooldown active")
+
+    obsolete = db.query(BusinessEvent.id).filter_by(kind="verification")
+    db.query(DeliveryJob).filter(
+        DeliveryJob.event_id.in_(obsolete),
+        DeliveryJob.recipient_key == f"owner:{user.id}",
+        DeliveryJob.state.in_(["READY", "RETRY_WAIT", "CLAIMED"]),
+    ).update(
+        {"state": "CANCELLED", "payload": None, "claim_token": None}, synchronize_session=False
+    )
 
     # Single-active: drop stale unconsumed tokens.
     db.query(EmailVerificationToken).filter(
@@ -83,7 +91,7 @@ async def issue_verification(
         )
     )
     record_audit(db, None, "owner", user.id, "auth.verification_sent", {})
-    db.commit()
+    db.flush()
 
     link = verification_link(raw)
     text = (
@@ -93,17 +101,17 @@ async def issue_verification(
         f"This link expires in {_ttl().total_seconds() / 3600:.0f} hours and is single-use. "
         "If you did not register, ignore this email."
     )
-    safe_link = _html.escape(link)
-    html_body = (
-        "<p>Welcome to LegacyLock.</p>"
-        f'<p><a href="{safe_link}">Verify your email</a></p>'
-        f"<p>Or paste this link:<br>{safe_link}</p>"
-        "<p>This link expires soon and is single-use.</p>"
+    business = event(db, None, "verification", int.from_bytes(secrets.token_bytes(3), "big"))
+    enqueue(
+        db,
+        business,
+        f"owner:{user.id}",
+        user.email,
+        "LegacyLock - Verify your email",
+        text,
+        expires=datetime.now(UTC) + _ttl(),
     )
-    try:
-        await send_email(user.email, "LegacyLock — Verify your email", text, html_body)
-    except Exception:
-        pass
+
     return raw
 
 
@@ -118,6 +126,14 @@ def consume_verification(db: Session, raw: str) -> User | None:
     """
     if not raw or len(raw) > 256:
         return None
+    # Use the same User -> verification-token lock order as reissuance.
+    # Looking up the token first is read-only; recheck it after acquiring User.
+    candidate = db.query(EmailVerificationToken).filter_by(token_hash=hash_token(raw)).first()
+    if candidate is None:
+        return None
+    user = db.query(User).filter_by(id=candidate.user_id).with_for_update().one_or_none()
+    if user is None:
+        return None
     now = datetime.now(UTC)
     flipped = (
         db.query(EmailVerificationToken)
@@ -127,7 +143,7 @@ def consume_verification(db: Session, raw: str) -> User | None:
         )
         .update({EmailVerificationToken.consumed_at: now}, synchronize_session=False)
     )
-    db.commit()
+    db.flush()
     if not flipped:
         return None
     row = (
@@ -141,9 +157,6 @@ def consume_verification(db: Session, raw: str) -> User | None:
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=UTC)
     if expires <= now:
-        return None
-    user = db.query(User).filter(User.id == row.user_id).first()
-    if user is None:
         return None
     user.email_verified_at = now
     user.updated_at = now

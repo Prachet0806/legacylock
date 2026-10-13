@@ -6,33 +6,14 @@ import { useState } from "react";
 import {
   Eye,
   EyeOff,
-  HeartPulse,
-  KeyRound,
   Lock,
   ShieldCheck,
   Vault as VaultIcon,
 } from "lucide-react";
 import { login } from "../lib/api";
 import { resendVerification } from "../lib/api/public";
+import { ApiError } from "../lib/api/transport";
 import { useToast } from "../components/toast";
-
-const HIGHLIGHTS = [
-  {
-    icon: ShieldCheck,
-    title: "Server-blind by design",
-    hint: "AES-256-GCM encryption happens in your browser. The server stores ciphertext only.",
-  },
-  {
-    icon: KeyRound,
-    title: "Shamir threshold recovery",
-    hint: "Your vault key splits into n shares. Any k reconstruct it — locally.",
-  },
-  {
-    icon: HeartPulse,
-    title: "Inactivity release",
-    hint: "Missed check-ins move the vault through grace to release for your beneficiaries.",
-  },
-];
 
 export default function LoginPage() {
   const router = useRouter();
@@ -56,7 +37,7 @@ export default function LoginPage() {
       router.push("/home");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
-      if (msg.includes("403")) {
+      if (e instanceof ApiError && e.status === 403) {
         setUnverified(true);
         setErr("Email not verified. Check your inbox for the link.");
       } else {
@@ -74,51 +55,43 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="mx-auto grid min-h-screen w-full max-w-6xl lg:grid-cols-2">
+    <main className="mx-auto grid min-h-screen w-full max-w-6xl lg:max-w-7xl xl:max-w-full lg:grid-cols-2">
       {/* Brand panel */}
-      <section className="relative hidden flex-col justify-between overflow-hidden border-r border-border bg-surface p-10 lg:flex">
+      <section className="relative hidden flex-col justify-center items-center text-center overflow-hidden border-r border-border bg-surface p-10 lg:flex">
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-accent/15 blur-3xl"
+          className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-accent/10 blur-3xl"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -bottom-32 -right-16 h-80 w-80 rounded-full bg-accent/10 blur-3xl"
+          className="pointer-events-none absolute -bottom-32 -right-16 h-80 w-80 rounded-full bg-accent/[0.07] blur-3xl"
         />
-        <div className="relative flex items-center gap-2">
-          <VaultIcon className="h-7 w-7 text-accent" />
-          <span className="text-xl font-semibold">LegacyLock</span>
-        </div>
-        <div className="relative flex flex-col gap-8">
-          <div className="flex flex-col gap-3">
-            <h2 className="max-w-md text-3xl font-bold leading-tight">
-              Your legacy, sealed with <span className="text-accent">zero knowledge</span>.
-            </h2>
-            <p className="max-w-md text-sm text-muted">
-              Store sensitive messages encrypted and release them to your beneficiaries
-              only after prolonged inactivity.
-            </p>
+        <div className="relative flex flex-col items-center gap-10 py-12">
+          <div className="relative flex items-center gap-2">
+            <VaultIcon className="h-7 w-7 text-accent" />
+            <span className="text-xl font-semibold tracking-tight">LegacyLock</span>
           </div>
-          <ul className="flex flex-col gap-5">
-            {HIGHLIGHTS.map((h) => {
-              const Icon = h.icon;
-              return (
-                <li key={h.title} className="flex items-start gap-3">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-raised">
-                    <Icon className="h-4 w-4 text-accent" />
-                  </span>
-                  <span>
-                    <span className="block text-sm font-medium">{h.title}</span>
-                    <span className="block max-w-sm text-sm text-muted">{h.hint}</span>
-                  </span>
+          <div className="relative flex flex-col items-center gap-6">
+            <div className="flex flex-col items-center gap-4">
+              <h2 className="max-w-md text-5xl font-bold leading-[1.05] tracking-tight text-balance">
+                Your legacy.<br />Kept private.
+              </h2>
+              <div className="h-px w-16 bg-accent/60" aria-hidden="true" />
+            </div>
+            <ul className="flex flex-col items-center gap-5 text-base">
+              {["Encrypted locally", "Recovery without trust", "Automatic release"].map((t) => (
+                <li key={t} className="flex items-center gap-3 text-muted">
+                  <span className="h-2 w-2 rounded-full bg-accent flex-shrink-0" aria-hidden="true" />
+                  {t}
                 </li>
-              );
-            })}
-          </ul>
+              ))}
+            </ul>
+          </div>
+          <p className="relative flex items-center gap-2 text-sm text-faint">
+            <ShieldCheck className="h-4 w-4 text-success" />
+            Zero-knowledge design — we can&apos;t read your data.
+          </p>
         </div>
-        <p className="relative text-xs text-faint">
-          Plaintext, passphrases, and raw shares never leave your browser.
-        </p>
       </section>
 
       {/* Form panel */}
@@ -126,12 +99,12 @@ export default function LoginPage() {
         <div className="mx-auto w-full max-w-md">
           <div className="mb-6 flex items-center gap-2 lg:hidden">
             <VaultIcon className="h-6 w-6 text-accent" />
-            <span className="text-lg font-semibold">LegacyLock</span>
+            <span className="text-lg font-semibold tracking-tight">LegacyLock</span>
           </div>
           <p className="text-sm text-muted">Welcome back</p>
-          <h1 className="mb-1 mt-1 text-2xl font-bold">Owner login</h1>
-          <p className="mb-6 text-sm text-muted">
-            Your login authenticates you. Your vault passphrase (asked next) unlocks your keys.
+          <h1 className="mb-1 mt-1 text-2xl font-semibold tracking-tight">Owner login</h1>
+          <p className="mb-6 text-sm leading-relaxed text-muted">
+            Sign in to check your vault status. Your vault passphrase unlocks your keys next.
           </p>
           <form onSubmit={onSubmit} className="flex flex-col gap-4">
             <div>
@@ -164,7 +137,7 @@ export default function LoginPage() {
                 />
                 <button
                   type="button"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted hover:text-text"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-muted hover:text-text"
                   onClick={() => setShow((v) => !v)}
                   aria-label={show ? "Hide password" : "Show password"}
                 >
@@ -190,20 +163,17 @@ export default function LoginPage() {
             )}
             <button type="submit" className="btn-primary w-full" disabled={busy}>
               <Lock className="h-4 w-4" />
-              {busy ? "Logging in…" : "Log in"}
+              {busy ? "Signing in…" : "Sign in"}
             </button>
           </form>
           <div className="my-6 flex items-center gap-3 text-xs text-faint" aria-hidden="true">
             <span className="h-px flex-1 bg-border" />
-            Protected by zero-knowledge encryption
+            🔒 Zero-knowledge design
             <span className="h-px flex-1 bg-border" />
           </div>
-          <p className="flex items-start gap-2 text-xs text-faint">
-            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-success" />
-            <span>
-              Sessions live in HttpOnly cookies. Have an invite code?{" "}
-              <Link className="underline" href="/register">Create an account</Link>.
-            </span>
+          <p className="text-xs leading-relaxed text-faint">
+            New here?{" "}
+            <Link className="underline" href="/register">Create an account</Link>.
           </p>
         </div>
       </section>

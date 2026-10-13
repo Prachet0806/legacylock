@@ -24,7 +24,18 @@ class Settings(BaseSettings):
     session_cookie_name_beneficiary_refresh: str = "legacylock_beneficiary_refresh"
     frontend_url: str = "http://localhost:3000"
     trusted_proxies: str = ""
+    allowed_hosts: str = "localhost,127.0.0.1,testserver"
     heartbeat_enabled: bool = True
+    release_hold: bool = False
+    delivery_enabled: bool = True
+    delivery_payload_key: str = ""
+    delivery_payload_key_id: str = "v1"
+    delivery_payload_keys: str = "{}"
+    auth_epoch: str = "initial"
+    sms_enabled: bool = False
+    background_in_api: bool = True
+    migrated_schema_only: bool = False
+    operations_token: str = ""
     # JWT RS256 keys (paths relative to backend/ or absolute)
     jwt_private_key_path: str = "keys/jwt_private.pem"
     jwt_public_key_path: str = "keys/jwt_public.pem"

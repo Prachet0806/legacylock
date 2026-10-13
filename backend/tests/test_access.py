@@ -5,13 +5,15 @@ RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
 
 
 def _invite_link(client, auth):
-    post = client.post("/beneficiaries", json={"name": "Ben", "email": "ben@test.com"}, headers=auth)
+    post = client.post(
+        "/beneficiaries", json={"name": "Ben", "email": "ben@test.com"}, headers=auth
+    )
     assert post.status_code == 201
     ben_id = post.json()["id"]
     r = client.post(f"/beneficiaries/{ben_id}/invite", headers=auth)
     assert r.status_code == 200
     link = r.json()["invitation_link"]
-    return link.rsplit("/", 1)[-1]
+    return link.split("token=", 1)[-1]
 
 
 def _beneficiary_headers(client, auth):
@@ -35,11 +37,15 @@ def _beneficiary_headers(client, auth):
         b = db.query(Beneficiary).filter(Beneficiary.id == ben_id).first()
         assert b is not None
         vault_id = b.vault_id
+        bound_jti = b.session_jti
     finally:
         db.close()
     token = create_access_token(
-        ben_id, vault_id, role="beneficiary",
+        ben_id,
+        vault_id,
+        role="beneficiary",
         expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+        jti=bound_jti,
     )
     client.cookies.clear()
     return {"Authorization": f"Bearer {token}"}
@@ -49,6 +55,7 @@ class TestInviteFlow:
     def test_invite_stores_hash_not_raw(self, client, auth):
         from db import SessionLocal
         from models import Beneficiary
+
         raw = _invite_link(client, auth)
         db = SessionLocal()
         try:
@@ -90,14 +97,15 @@ class TestInviteFlow:
         client.cookies.clear()
         client.cookies.set("legacylock_beneficiary_refresh", old_refresh, path="/access")
         r2 = client.post("/access/session")
-        assert r2.status_code == 401
+        assert r2.status_code == 409
+        client.cookies.clear()
         # No credential at all
         assert client.post("/access/session").status_code == 401
         client.cookies.clear()
 
     def test_status_gated_by_trigger(self, client, auth):
         bh = _beneficiary_headers(client, auth)
-        assert client.get("/access/status", headers=bh).status_code == 403
+        assert client.get("/access/status", headers=bh).json()["vault_status"] == "active"
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
             r = client.get("/access/status", headers=bh)
@@ -120,9 +128,7 @@ class TestShareRemoved:
         # Abuse protection now lives in strict per-route buckets.
         monkeypatch.setenv("RATE_LIMIT_TESTING", "1")
         bh = _beneficiary_headers(client, auth)
-        statuses = {
-            client.post("/access/session", headers=bh).status_code for _ in range(15)
-        }
+        statuses = {client.post("/access/session", headers=bh).status_code for _ in range(15)}
         assert 429 in statuses
 
 
@@ -140,11 +146,18 @@ class TestShareAssignments:
 class TestRecoveryMessages:
     def _setup(self, client, auth):
         import base64
-        wmek = base64.b64encode(b"0" * 32).decode()
+
+        wmek = base64.b64encode(b"0" * 40).decode()
         ct = base64.b64encode(b"x" * 16).decode()
         mid = client.post(
             "/vault/messages",
-            json={"label": "will", "ciphertext": ct, "wrapped_mek": wmek},
+            json={
+                "label": "will",
+                "ciphertext": ct,
+                "material_revision": 1,
+                "wrapped_mek": wmek,
+                "crypto_metadata": {"iv": base64.b64encode(b"i" * 12).decode()},
+            },
             headers=auth,
         ).json()["id"]
         return mid, _beneficiary_headers(client, auth)
@@ -170,10 +183,12 @@ class TestRecoveryMessages:
         finally:
             client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
 
+
 class TestAuditPersisted:
     def test_trigger_writes_audit_row(self, client, auth):
         from db import SessionLocal
         from models import AuditEvent
+
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
             db = SessionLocal()

@@ -2,13 +2,14 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import get_settings
 from deps import get_db, require_owner
-from logging_config import log_audit
 from models import HeartbeatConfig, User, Vault, VaultStatus
+from services.audit import record_audit
+from services.outbox import cancel_warnings
+from services.trigger_service import lock_status
 
 router = APIRouter(
     prefix="/heartbeat",
@@ -38,15 +39,7 @@ def _get_or_create_heartbeat_config(db: Session, vault_id: int) -> HeartbeatConf
     if not cfg:
         cfg = HeartbeatConfig(vault_id=vault_id, interval_days=30, grace_days=7)
         db.add(cfg)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            cfg = db.query(HeartbeatConfig).filter(HeartbeatConfig.vault_id == vault_id).first()
-            if not cfg:
-                raise
-            return cfg
-        db.refresh(cfg)
+        db.flush()
     return cfg
 
 
@@ -58,6 +51,7 @@ def _get_or_create_heartbeat_config(db: Session, vault_id: int) -> HeartbeatConf
 class HeartbeatSettingsIn(BaseModel):
     interval_days: int = Field(..., ge=1, le=365)
     grace_days: int = Field(..., ge=1, le=90)
+    armed: bool | None = None
 
 
 class HeartbeatOut(BaseModel):
@@ -65,6 +59,7 @@ class HeartbeatOut(BaseModel):
     grace_days: int
     last_check_in: str | None
     updated_at: str
+    armed: bool = False
 
 
 class RunCheckIn(BaseModel):
@@ -92,6 +87,7 @@ def get_heartbeat(current_user: User = Depends(require_owner), db: Session = Dep
         grace_days=cfg.grace_days,
         last_check_in=cfg.last_check_in.isoformat() if cfg.last_check_in else None,
         updated_at=cfg.updated_at.isoformat() if cfg.updated_at else "",
+        armed=bool(vault.status and vault.status.armed),
     )
 
 
@@ -104,28 +100,37 @@ def save_heartbeat(
     if data.grace_days > data.interval_days:
         raise HTTPException(status_code=422, detail="grace_days should not exceed interval_days")
     vault = _get_vault(db, current_user)
+    vs = lock_status(db, vault.id)
+    if vs.state == "triggered":
+        raise HTTPException(409, "Released vaults cannot be rearmed")
     cfg = _get_or_create_heartbeat_config(db, vault.id)
     cfg.interval_days = data.interval_days
     cfg.grace_days = data.grace_days
     cfg.updated_at = datetime.now(UTC)
+    vs.state, vs.grace_started_at = "active", None
+    if data.armed is not None:
+        vs.armed = data.armed
+        if data.armed and cfg.last_check_in is None:
+            cfg.last_check_in = datetime.now(UTC)
+    cancel_warnings(db, vault.id)
+    record_audit(db, vault.id, "owner", current_user.id, "heartbeat.save", {"armed": vs.armed})
     db.commit()
-    try:
-        log_audit("heartbeat.save", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
     return {"message": "Heartbeat settings saved"}
 
 
 @router.post("/checkin")
 def check_in(current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     vault = _get_vault(db, current_user)
+    vs = lock_status(db, vault.id)
+    if vs.state == "triggered":
+        raise HTTPException(409, "Vault already released; a check-in cannot reverse access")
     cfg = _get_or_create_heartbeat_config(db, vault.id)
     now = datetime.now(UTC)
     cfg.last_check_in = now
     cfg.updated_at = now
     # Single transaction: check-in timestamp AND grace-cancel CAS-reset commit
     # together, so a crash between them can't split the state.
-    vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
+    vs.armed = True
     if vs and vs.state != "triggered" and (vs.state != "active" or vs.grace_started_at is not None):
         ver = vs.version or 1
         # A concurrent auto-trigger that already committed wins; a stale one
@@ -138,10 +143,8 @@ def check_in(current_user: User = Depends(require_owner), db: Session = Depends(
             {"state": "active", "grace_started_at": None, "version": ver + 1, "updated_at": now},
             synchronize_session="fetch",
         )
-    try:
-        log_audit("heartbeat.checkin", "owner", current_user.id, vault.id)
-    except Exception:
-        pass
+    cancel_warnings(db, vault.id)
+    record_audit(db, vault.id, "owner", current_user.id, "heartbeat.checkin", {})
     db.commit()
     return {"message": "Check-in recorded", "last_check_in": cfg.last_check_in.isoformat()}
 
@@ -165,9 +168,5 @@ def run_check(
     from services.heartbeat_checker import check_heartbeat
 
     now = datetime.now(UTC) + timedelta(days=data.advance_days)
-    actions = check_heartbeat(db, now=now)
-    try:
-        log_audit("heartbeat.run_check", "owner", current_user.id, None)
-    except Exception:
-        pass
+    actions = check_heartbeat(db, now=now, vault_id=_get_vault(db, current_user).id)
     return RunCheckOut(actions=actions, simulated_now=now.isoformat())

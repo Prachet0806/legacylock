@@ -1,14 +1,15 @@
 "use client";
 
-// Beneficiary recovery stepper: gate -> shares -> pick message -> decrypt.
+// Beneficiary recovery ceremony: gate -> shares -> pick message -> decrypt.
 // Reconstruction and decryption happen in this tab. The server never sees
 // shares (not even hashes): brute-force protection is strict rate limiting
 // plus the client-side failed-attempt lockout below.
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, FileText, Info, ShieldCheck, Ticket, Unlock } from "lucide-react";
+import Link from "next/link";
+import { ArrowLeft, ArrowRight, CheckCircle2, FileText, Info, Lock, ShieldCheck, Ticket, Unlock, Vault as VaultIcon } from "lucide-react";
 import { clsx } from "clsx";
-import { decryptMessage, zeroMemory } from "../../lib/crypto";
-import { parseShare, reconstructVMK } from "../../lib/shamir";
+import { assertEpoch, bindVault, currentEpoch, decrypt, isUnlocked, lockVault, recover, subscribe } from "../../lib/crypto-session";
+import { parseShare } from "../../lib/shamir";
 import {
   getAccessStatus,
   getRecoveryMessage,
@@ -16,7 +17,7 @@ import {
   listRecoveryMessages,
   type RecoveryMessageMeta,
 } from "../../lib/client";
-import { CopyButton, EmptyState, Spinner } from "../../components/ui";
+import { CopyButton, EmptyState, Spinner, Stepper } from "../../components/ui";
 import { useToast } from "../../components/toast";
 
 const MAX_LOCAL_FAILURES = 5;
@@ -27,12 +28,15 @@ export default function RecoveryPage() {
   const [step, setStep] = useState(1);
   const [gate, setGate] = useState<string>("checking…");
   const [gateOk, setGateOk] = useState(false);
+  const [vaultName, setVaultName] = useState("");
   const [threshold, setThreshold] = useState(2);
   const [total, setTotal] = useState(3);
   const [generation, setGeneration] = useState<string | null>(null);
   const [shareInputs, setShareInputs] = useState<string[]>(["", ""]);
-  const [vmk, setVmk] = useState<Uint8Array | null>(null);
+  const [unlocked, setUnlocked] = useState(false);
+  useEffect(() => subscribe(() => { setUnlocked(isUnlocked()); if (!isUnlocked()) { setOut(null); setMessages([]); setShareInputs(Array.from({length:threshold},()=>"")); setStep(1); } }), [threshold]);
   const [messages, setMessages] = useState<RecoveryMessageMeta[]>([]);
+  const [hasMore, setHasMore] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [out, setOut] = useState<{ label: string; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -41,9 +45,15 @@ export default function RecoveryPage() {
   const [lockedUntil, setLockedUntil] = useState(0);
 
   useEffect(() => {
+    let cancelled=false;
+    const before=currentEpoch();
     (async () => {
       try {
         const s = await getAccessStatus();
+        if(cancelled)return;
+        assertEpoch(before);
+        bindVault(`beneficiary:${s.beneficiary_id}`, s.material_revision);
+        setVaultName(s.vault_name ?? "");
         setGate(`${s.vault_name} — ${s.vault_status}`);
         setGateOk(s.vault_status === "triggered");
         const k = s.recovery_threshold ?? 2;
@@ -56,12 +66,7 @@ export default function RecoveryPage() {
         setGate(e instanceof Error ? e.message : "status check failed");
       }
     })();
-    return () => {
-      setVmk((prev) => {
-        if (prev) zeroMemory(prev);
-        return null;
-      });
-    };
+    return () => {cancelled=true;lockVault();};
   }, []);
 
   async function onSharesContinue() {
@@ -84,19 +89,37 @@ export default function RecoveryPage() {
         // Legacy shares carry no generation — fall through to reconstruct.
       }
       // Reconstruct locally only — shares never leave this tab in any form.
-      const raw = reconstructVMK(inputs, threshold, generation ?? undefined);
-      setVmk(raw);
+      recover(inputs, threshold, generation ?? undefined);
+      setUnlocked(true);
       // Minimize exposure: drop raw share text once the VMK is derived.
       // (Browser memory can't be securely erased, but this bounds lifetime.)
       setShareInputs(Array.from({ length: threshold }, () => ""));
       setFailures(0);
-      setMessages(await listRecoveryMessages());
+      const before=currentEpoch();
+      const rows=await listRecoveryMessages();
+      assertEpoch(before);
+      setMessages(rows);
+      setHasMore(rows.length === 50);
       setStep(3);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Shares do not combine — check for typos.");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function loadMore() {
+    setBusy(true);
+    setErr("");
+    try {
+      const before = currentEpoch();
+      const rows = await listRecoveryMessages(messages[messages.length - 1]?.id);
+      assertEpoch(before);
+      setMessages((previous) => [...previous, ...rows]);
+      setHasMore(rows.length === 50);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Could not load messages.");
+    } finally { setBusy(false); }
   }
 
   async function onDecrypt(id: number) {
@@ -108,12 +131,13 @@ export default function RecoveryPage() {
     }
     setBusy(true);
     try {
-      if (!vmk) throw new Error("Enter your shares first.");
+      if (!unlocked) throw new Error("Enter your shares first.");
+      const before = currentEpoch();
       const m = await getRecoveryMessage(id);
-      const text = await decryptMessage(
+      const text = await decrypt(
         { v: m.crypto_version, algo: "AES-256-GCM", kdf: null, iv_b64: ivOf(m.crypto_metadata), wrapped_mek_b64: m.wrapped_mek, ciphertext_b64: m.ciphertext },
-        vmk,
       );
+      assertEpoch(before);
       setSelectedId(id);
       setFailures(0);
       setOut({ label: m.label, text });
@@ -130,59 +154,63 @@ export default function RecoveryPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
-      <h1 className="text-2xl font-bold">Beneficiary recovery</h1>
-      <ol className="my-6 flex items-center gap-2 text-sm" aria-label="Recovery progress">
-        {["Access", "Shares", "Decrypt"].map((label, i) => (
-          <li
-            key={label}
-            className="flex items-center gap-2"
-            aria-current={step === i + 1 ? "step" : undefined}
-          >
-            <span
-              className={clsx(
-                "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold",
-                step > i + 1 ? "bg-success text-black" : step === i + 1 ? "bg-accent text-black" : "bg-raised text-muted",
-              )}
-            >
-              {i + 1}
-            </span>
-            <span className={step === i + 1 ? "text-text" : "text-muted"}>{label}</span>
-            {i < 2 && <span className="mx-1 text-faint">—</span>}
-          </li>
-        ))}
-      </ol>
+      <div className="flex flex-col items-center text-center">
+        <VaultIcon className="h-7 w-7 text-accent" />
+        <p className="eyebrow mt-3">LegacyLock Recovery</p>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Beneficiary recovery</h1>
+      </div>
+      <Link className="btn-ghost mt-4" href="/access/login">Request a new sign-in link</Link>
+      <div className="my-6 flex justify-center">
+        <Stepper steps={["Access", "Shares", "Decrypt"]} current={step} />
+      </div>
 
       {step === 1 && (
-        <div className="card flex flex-col gap-3">
-          <h2 className="font-semibold">1. Vault access gate</h2>
-          <p className="text-sm text-muted">
-            Recovery unlocks only after the vault is TRIGGERED. Accept your invitation first,
-            then return here.
-          </p>
-          <p className="text-sm">Gate: <strong>{gate}</strong></p>
-          {!gateOk && (
-            <p className="flex items-start gap-2 text-sm text-warn">
+        <div className="surface-lg flex flex-col items-center gap-3 py-10 text-center">
+          {gateOk ? (
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-success/15">
+              <CheckCircle2 className="h-6 w-6 text-success" />
+            </span>
+          ) : (
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-raised">
+              <Lock className="h-5 w-5 text-muted" />
+            </span>
+          )}
+          <h2 className="text-lg font-semibold">
+            {gateOk ? "The vault has been released." : "Checking vault access…"}
+          </h2>
+          <p className="text-sm text-muted">Gate: <strong className="text-text">{gate}</strong></p>
+          {gateOk ? (
+            <>
+              <p className="flex items-center gap-1.5 text-sm text-success">
+                <CheckCircle2 className="h-4 w-4" />
+                Access verified{vaultName ? ` · ${vaultName}` : ""}
+              </p>
+              <p className="max-w-xs text-sm leading-relaxed text-muted">
+                You need {threshold} of {total} recovery shares to reconstruct the vault key.
+              </p>
+              <button type="button" className="btn-primary mt-2 min-w-44" onClick={() => setStep(2)}>
+                Continue
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </>
+          ) : (
+            <p className="flex max-w-xs items-start gap-2 text-sm leading-relaxed text-warn">
               <Info className="mt-0.5 h-4 w-4 shrink-0" />
               Not yet released. If you are the owner testing, trigger the vault from Heartbeat.
             </p>
           )}
-          <button type="button" className="btn-primary self-end text-sm" disabled={!gateOk} onClick={() => setStep(2)}>
-            Continue
-            <ArrowRight className="h-4 w-4" />
-          </button>
         </div>
       )}
 
       {step === 2 && (
-        <div className="card flex flex-col gap-3">
+        <div className="surface-lg flex flex-col gap-3">
           <h2 className="flex items-center gap-2 font-semibold">
             <Ticket className="h-4 w-4 text-accent" />
-            2. Enter {threshold} of your {total} shares
+            Recovery shares
           </h2>
-          <p className="text-sm text-muted">
-            Paste the shares distributed to you out-of-band. They never leave
-            this tab in any form — reconstruction happens locally. Use shares from a single
-            recovery set; mixing sets cannot work.
+          <p className="text-sm leading-relaxed text-muted">
+            Enter {threshold} of {total} shares. Your shares are processed locally.
+            They are never uploaded. Use shares from a single recovery set.
             {threshold === 1 && " Note: this vault is 1-of-n — any single share alone recovers."}
           </p>
           {shareInputs.map((val, i) => (
@@ -192,6 +220,7 @@ export default function RecoveryPage() {
                 id={`share-${i}`}
                 className="input font-mono text-xs"
                 rows={3}
+                placeholder="Paste share…"
                 value={val}
                 onChange={(e) =>
                   setShareInputs((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))
@@ -212,7 +241,7 @@ export default function RecoveryPage() {
               onClick={onSharesContinue}
             >
               {busy && <Spinner />}
-              Submit shares
+              Reconstruct
               <ArrowRight className="h-4 w-4" />
             </button>
           </div>
@@ -221,28 +250,32 @@ export default function RecoveryPage() {
 
       {step === 3 && (
         <div className="flex flex-col gap-4">
-          <div className="card flex flex-col gap-3">
+          <div className="surface-lg flex flex-col gap-3">
             <h2 className="flex items-center gap-2 font-semibold">
               <FileText className="h-4 w-4 text-accent" />
-              3. Choose a message to decrypt
+              Vault recovered
             </h2>
+            <p className="text-sm leading-relaxed text-muted">
+              Your recovery key was reconstructed locally in this browser.{" "}
+              {messages.length > 0 ? `${messages.length} ${messages.length === 1 ? "message" : "messages"} available.` : ""}
+            </p>
             {messages.length === 0 ? (
               <EmptyState
-                icon={<FileText className="h-8 w-8" />}
+                icon={<FileText className="h-6 w-6" />}
                 title="No messages released"
                 hint="The vault has no messages to recover."
               />
             ) : (
-              <ul className="flex flex-col gap-2">
+              <ul className="overflow-hidden rounded-xl border border-border">
                 {messages.map((m) => (
-                  <li key={m.id} className="flex items-center gap-3 rounded-md bg-raised p-3">
+                  <li key={m.id} className="row-item !bg-transparent">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{m.label}</p>
                       {m.category && <p className="text-xs text-faint">{m.category}</p>}
                     </div>
                     <button
                       type="button"
-                      className="btn-ghost px-2 py-1 text-xs"
+                      className="btn-ghost !rounded-lg px-2.5 py-1.5 text-xs"
                       disabled={busy}
                       onClick={() => onDecrypt(m.id)}
                     >
@@ -253,6 +286,7 @@ export default function RecoveryPage() {
                 ))}
               </ul>
             )}
+            {hasMore && <button type="button" className="btn-ghost text-sm" disabled={busy} onClick={loadMore}>Load more messages</button>}
             {err && <p role="alert" className="text-sm text-danger">{err}</p>}
             <div>
               <button
@@ -260,8 +294,8 @@ export default function RecoveryPage() {
                 className="btn-ghost text-sm"
                 disabled={busy}
                 onClick={() => {
-                  if (vmk) zeroMemory(vmk);
-                  setVmk(null);
+                  lockVault();
+                  setUnlocked(false);
                   setOut(null);
                   setStep(2);
                 }}
@@ -272,12 +306,12 @@ export default function RecoveryPage() {
             </div>
           </div>
           {out && (
-            <div className="card border-success">
+            <div className="surface-lg !border-success/40">
               <p className="mb-2 flex items-center gap-2 text-sm font-medium text-success">
                 <ShieldCheck className="h-4 w-4" />
                 {out.label} — decrypted locally
               </p>
-              <pre className="whitespace-pre-wrap rounded-md bg-raised p-4 text-sm">{out.text}</pre>
+              <pre className="whitespace-pre-wrap rounded-xl bg-raised p-4 text-sm leading-relaxed">{out.text}</pre>
               <div className="mt-3 flex justify-end">
                 <CopyButton text={out.text} label="Copy text" />
               </div>

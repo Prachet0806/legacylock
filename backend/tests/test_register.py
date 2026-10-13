@@ -12,15 +12,16 @@ PW = "RegisterPass123!Long"
 @pytest.fixture
 def captured_email(monkeypatch):
     """Capture Resend-bound emails without network (RESEND_API_KEY is empty in tests)."""
-    import services.notifications as notifications
+    import services.outbox as outbox
 
     calls = []
+    original = outbox.enqueue
 
-    async def fake(to, subject, body, html_body=None):
-        calls.append({"to": to, "subject": subject, "body": body, "html": html_body})
-        return True
+    def capture(db, business_event, recipient_key, to, subject, body, **kw):
+        calls.append({"to": to, "subject": subject, "body": body, "html": None})
+        return original(db, business_event, recipient_key, to, subject, body, **kw)
 
-    monkeypatch.setattr(notifications, "send_email", fake)
+    monkeypatch.setattr(outbox, "enqueue", capture)
     return calls
 
 
@@ -85,10 +86,18 @@ class TestRegister:
     def test_disabled_when_no_code(self, client, monkeypatch):
         import routers.auth as auth_router
 
-        monkeypatch.setattr(auth_router, "get_settings", lambda: type("S", (), {
-            "registration_invite_code": "",
-            "frontend_origin": lambda self: "http://localhost:3000",
-        })())
+        monkeypatch.setattr(
+            auth_router,
+            "get_settings",
+            lambda: type(
+                "S",
+                (),
+                {
+                    "registration_invite_code": "",
+                    "frontend_origin": lambda self: "http://localhost:3000",
+                },
+            )(),
+        )
         email = f"off-{uuid.uuid4().hex[:8]}@example.com"
         r = _register(client, email)
         assert r.status_code == 403

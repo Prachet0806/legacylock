@@ -1,11 +1,13 @@
 // Owner auth bootstrap (public endpoints, no retry).
-import { publicFetch } from "./transport";
+import { publicFetch, sessionChanged } from "./transport";
 
 export async function login(email: string, password: string): Promise<void> {
+  sessionChanged();
   await publicFetch<void>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+  sessionChanged(); // other tabs must probe after the new cookie is committed
   // Session lives in HttpOnly cookies only; the body carries no tokens.
 }
 

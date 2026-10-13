@@ -30,6 +30,14 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   // an unattended visible vault is the actual unattended-device threat.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let idle: ReturnType<typeof setTimeout> | null = null;
+    const onActivity = () => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(lockVault, 15 * 60 * 1000);
+    };
+    onActivity();
+    window.addEventListener("pointerdown", onActivity);
+    window.addEventListener("keydown", onActivity);
     const onVisibility = () => {
       if (document.hidden) {
         timer = setTimeout(lockVault, 5 * 60 * 1000);
@@ -45,6 +53,9 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("beforeunload", onUnload);
       if (timer) clearTimeout(timer);
+      if (idle) clearTimeout(idle);
+      window.removeEventListener("pointerdown", onActivity);
+      window.removeEventListener("keydown", onActivity);
     };
   }, []);
 

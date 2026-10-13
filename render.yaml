@@ -1,0 +1,87 @@
+# Replace example domains and configure secret files in the Render dashboard.
+# Render Blueprint does not manage secret-file contents. API only gets the JWT pair.
+services:
+  - type: web
+    name: legacylock-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    numInstances: 1 # in-process rate buckets; scale only after shared enforcement
+    autoDeployTrigger: off # controlled migration and worker rollout
+    healthCheckPath: /readyz
+    preDeployCommand: alembic upgrade head
+    dockerCommand: uvicorn main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: legacylock-pg, property: connectionString }
+      - key: SESSION_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://app.example.com
+      - key: ALLOWED_HOSTS
+        value: legacylock-backend.onrender.com,api.example.com
+      - key: FRONTEND_URL
+        value: https://app.example.com
+      - key: TRUSTED_PROXIES
+        sync: false
+      - key: BACKGROUND_IN_API
+        value: false
+      - key: RELEASE_HOLD
+        value: true
+      - key: AUTH_EPOCH
+        sync: false
+      - key: DELIVERY_PAYLOAD_KEY
+        sync: false
+      - key: OPERATIONS_TOKEN
+        sync: false
+      - key: REGISTRATION_INVITE_CODE
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NOTIFICATION_EMAIL_FROM
+        sync: false
+      - key: JWT_PRIVATE_KEY_PATH
+        value: /etc/secrets/jwt_private.pem
+      - key: JWT_PUBLIC_KEY_PATH
+        value: /etc/secrets/jwt_public.pem
+  - type: worker
+    name: legacylock-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter
+    autoDeployTrigger: off
+    dockerCommand: python worker.py
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: legacylock-pg, property: connectionString }
+      - key: SESSION_SECRET
+        value: unused-worker-setting-no-cookie-signing-0000
+      - key: BACKGROUND_IN_API
+        value: false
+      - key: RELEASE_HOLD
+        value: true
+      - key: HEARTBEAT_ENABLED
+        value: true
+      - key: AUTH_EPOCH
+        sync: false
+      - key: DELIVERY_PAYLOAD_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NOTIFICATION_EMAIL_FROM
+        sync: false
+      - key: FRONTEND_URL
+        value: https://app.example.com
+# Keep API/worker key, epoch, hold and provider settings synchronized.
+# Workers need no JWT files. Deploy the worker only after migration succeeds.
+databases:
+  - name: legacylock-pg
+    plan: 0.1c-256mb
+    postgresMajorVersion: 17
+    ipAllowList: []

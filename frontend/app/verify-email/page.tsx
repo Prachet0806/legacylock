@@ -1,42 +1,44 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { resendVerification, verifyEmail } from "../../lib/api/public";
 
 function VerifyInner() {
-  const router = useRouter();
   const params = useSearchParams();
-  const token = params.get("token") ?? "";
+  const initialQueryToken=useRef(params.get("token")??"");
+  const [token, setToken] = useState("");
   const [state, setState] = useState<"idle" | "busy" | "ok" | "fail">("idle");
   const [email, setEmail] = useState("");
   const [resent, setResent] = useState(false);
+  const [credentialReady,setCredentialReady]=useState(false);
   // Single-flight guard: the token is atomic single-use server-side, so a
   // second POST (e.g. React StrictMode's dev double-effect) would burn the
   // redemption and flip the UI to failure. Refs survive strict remounts.
   const attempted = useRef(false);
 
   useEffect(() => {
-    if (!token) {
-      // After a successful scrub the token reads empty on rerender — that is
-      // not a failure. Only fresh loads without a token fail here.
-      if (!attempted.current) setState("fail");
-      return;
-    }
-    if (attempted.current) return;
+    const read=()=>{
+      const value=new URLSearchParams(window.location.hash.slice(1)).get("token") ?? initialQueryToken.current;
+      initialQueryToken.current="";
+      if(value) {setToken(value);attempted.current=false;setState("idle");}
+      window.history.replaceState(null, "", "/verify-email");
+    };
+    read();
+    window.addEventListener("hashchange",read);
+    setCredentialReady(true);
+    return ()=>window.removeEventListener("hashchange",read);
+  }, []);
+
+  async function confirmVerification() {
+    if (!token || attempted.current) return;
     attempted.current = true;
     setState("busy");
-    verifyEmail(token)
-      .then(() => setState("ok"))
-      .catch(() => setState("fail"))
-      .finally(() => {
-        // Remove the credential from the URL/history immediately after use
-        // via Next's router (a raw history.replaceState is fought by the App
-        // Router's own history patching and leaves the token in place).
-        router.replace("/verify-email", { scroll: false });
-      });
-  }, [token, router]);
+    try { await verifyEmail(token); setState("ok"); }
+    catch { setState("fail"); }
+    finally { setToken(""); }
+  }
 
   async function onResend(e: React.FormEvent) {
     e.preventDefault();
@@ -46,8 +48,9 @@ function VerifyInner() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4 py-10">
+    <main data-credential-ready={credentialReady} className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-4 py-10">
       <h1 className="mb-2 text-2xl font-bold">Email verification</h1>
+      {state === "idle" && <button className="btn-primary" disabled={!token} onClick={confirmVerification}>Confirm email verification</button>}
       {state === "busy" && <p className="text-sm text-muted">Verifying…</p>}
       {state === "ok" && (
         <div className="flex flex-col gap-4">

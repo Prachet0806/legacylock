@@ -4,6 +4,7 @@ import { VaultProvider } from "../lib/store/vault-context";
 import { ToastProvider } from "../components/toast";
 import { AppShell } from "../components/shell";
 import "./globals.css";
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "LegacyLock",

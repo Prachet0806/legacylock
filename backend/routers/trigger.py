@@ -67,6 +67,8 @@ class VaultStatusOut(BaseModel):
     updated_at: str
     recovery_threshold: int = 2
     recovery_total: int = 3
+    release_hold: bool = False
+    armed: bool = False
 
 
 class TriggerRequest(BaseModel):
@@ -109,6 +111,8 @@ def get_status(current_user: User = Depends(require_owner), db: Session = Depend
         updated_at=vs.updated_at.isoformat() if vs.updated_at else "",
         recovery_threshold=int(getattr(vault, "recovery_threshold", None) or 2),
         recovery_total=int(getattr(vault, "recovery_total", None) or 3),
+        release_hold=get_settings().release_hold,
+        armed=bool(vs.armed),
     )
 
 
@@ -122,14 +126,8 @@ def trigger_vault_route(
         raise HTTPException(status_code=401, detail="Invalid password")
 
     vault = _get_vault(db, current_user)
-    vs, already = _trigger_vault(db, vault.id, reason="manual")
-    record_audit(
-        db,
-        vault.id,
-        "owner",
-        current_user.id,
-        "vault.trigger",
-        {"reason": "manual", "already": already},
+    vs, already = _trigger_vault(
+        db, vault.id, reason="manual", actor_type="owner", actor_id=current_user.id
     )
     db.commit()
 
@@ -172,7 +170,9 @@ def reset_status(
         },
         synchronize_session="fetch",
     )
-    db.commit()
+    from services.outbox import cancel_warnings
+
+    cancel_warnings(db, vault.id)
     record_audit(db, vault.id, "owner", current_user.id, "vault.reset", {})
     db.commit()
     return {"message": "Vault status reset to active."}

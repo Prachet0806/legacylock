@@ -227,6 +227,8 @@ export function reconstructVMK(
     throw new Error(`Enter exactly ${threshold} shares (got ${shareB64s.length})`);
   const parsed = shareB64s.map(parseShare);
   const modern = parsed.filter((p) => !p.legacy);
+  if (expectedGeneration && modern.length === 0)
+    throw new Error("Legacy shares cannot be used for a generation-bound recovery set");
   if (modern.length > 0 && modern.length !== parsed.length)
     throw new Error("These shares belong to different recovery sets — do not mix formats");
   if (modern.length > 0) {

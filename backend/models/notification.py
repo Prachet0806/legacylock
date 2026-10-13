@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, String, Text
 
 from db import Base
 
@@ -13,8 +13,11 @@ class NotificationLog(Base):
     beneficiary_id = Column(Integer, ForeignKey("beneficiary.id"), nullable=True, index=True)
     channel = Column(String(10), nullable=False)
     notif_type = Column("type", String(30), nullable=False)
-    # Lifecycle: pending -> sent | failed, gated on the real send result.
+    # Lifecycle: pending -> sent | failed (-> retrying -> sent|failed).
     status = Column(String(20), nullable=False)
+    attempts = Column(Integer, nullable=False, default=1)
+    last_error = Column(Text, nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True)
     provider_message_id = Column(String(100), nullable=True)
     sent_at = Column(
         DateTime(timezone=True),
@@ -32,4 +35,9 @@ class NotificationLog(Base):
             "channel",
             unique=True,
         ),
+        CheckConstraint(
+            "status IN ('pending','sent','failed','retrying')",
+            name="ck_notification_status",
+        ),
+        CheckConstraint("channel IN ('email','sms')", name="ck_notification_channel"),
     )

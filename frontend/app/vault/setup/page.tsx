@@ -4,21 +4,18 @@
 // VMK is generated in-browser; the server only stores the wrapped VMK + k-of-n policy.
 // Shares display ONCE for out-of-band distribution and are never transmitted.
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Check,
-  Download,
   KeyRound,
   ShieldCheck,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { CRYPTO_VERSION, setupVault } from "../../../lib/crypto-session";
-import { parseShare } from "../../../lib/shamir";
-import { postRecoveryCeremony, putCryptoMaterial } from "../../../lib/client";
-import { CopyButton, Spinner } from "../../../components/ui";
+import { assertEpoch, currentEpoch, isUnlocked, subscribe, CRYPTO_VERSION, lockVault, setupVault } from "../../../lib/crypto-session";
+import { postRecoveryCeremony, getCryptoMaterial, finalizeCeremony } from "../../../lib/client";
+import { CopyButton, Spinner, Stepper } from "../../../components/ui";
 import { useToast } from "../../../components/toast";
 
 const MAX_POLICY_N = 10;
@@ -35,6 +32,106 @@ function strength(pass: string): { label: string; width: string } {
   return { label: labels[score], width: widths[score] };
 }
 
+function ShareStep({ shares, threshold, total, stored, setStored, onFinish }: {
+  shares: string[];
+  threshold: number;
+  total: number;
+  stored: boolean[];
+  setStored: (v: boolean[]) => void;
+  onFinish: () => void;
+}) {
+  const [index, setIndex] = useState(0);
+  const share = shares[index];
+  const allStored = stored.length > 0 && stored.every(Boolean);
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="surface-lg py-8 text-center">
+        <p className="supporting">Protect your recovery key</p>
+        <h2 className="mt-2 text-xl font-semibold tracking-tight">
+          Your vault key has been split into {total} independent recovery shares.
+        </h2>
+        <p className="supporting mt-2">Any {threshold} {threshold === 1 ? "share can" : "shares can"} recover your vault.</p>
+        <p className="mx-auto mt-4 inline-flex items-center gap-2 rounded-full bg-raised px-4 py-1.5 text-sm font-medium">
+          {threshold} of {total} required
+        </p>
+      </div>
+
+      <div className="surface-lg">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-semibold">Share {index + 1} of {total}</p>
+          <div className="flex gap-1.5">
+            {shares.map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setIndex(i)}
+                aria-label={`Go to share ${i + 1}`}
+                className={clsx(
+                  "h-2 rounded-full transition-all",
+                  i === index ? "w-6 bg-accent" : stored[i] ? "w-2 bg-success" : "w-2 bg-raised",
+                )}
+              />
+            ))}
+          </div>
+        </div>
+        <code data-testid={`share-${index + 1}`} className="mt-3 block break-all rounded-xl bg-raised p-4 font-mono text-xs leading-relaxed">{share}</code>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <CopyButton text={share} label="Copy" />
+          <button
+            type="button"
+            className={clsx("btn-ghost text-xs", stored[index] && "!border-success/40 !text-success")}
+            onClick={() => setStored(stored.map((v, j) => (j === index ? !v : v)))}
+            aria-pressed={stored[index]}
+          >
+            <Check className="h-3.5 w-3.5" />
+            {stored[index] ? "Stored ✓" : "I've stored this safely"}
+          </button>
+        </div>
+        <div className="mt-4 flex items-center justify-between">
+          <button
+            type="button"
+            className="btn-ghost text-sm"
+            disabled={index === 0}
+            onClick={() => setIndex((i) => Math.max(0, i - 1))}
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Previous
+          </button>
+          {index < shares.length - 1 ? (
+            <button type="button" className="btn-primary text-sm" disabled={!stored[index]} onClick={() => setIndex((i) => i + 1)}>
+              Next share
+              <ArrowRight className="h-4 w-4" />
+            </button>
+          ) : (
+            <button type="button" className="btn-primary text-sm" disabled={!allStored} onClick={onFinish}>
+              <ShieldCheck className="h-4 w-4" />
+              Complete setup
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="surface-lg">
+        <p className="text-sm font-medium">Recovery setup</p>
+        <ul className="mt-2 flex flex-col gap-1.5">
+          {shares.map((_, i) => (
+            <li key={i} className="flex items-center justify-between text-sm">
+              <span className="text-muted">Share {i + 1}</span>
+              <span className={stored[i] ? "font-medium text-success" : "text-faint"}>
+                {stored[i] ? "✓ Stored" : "○ Pending"}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-3 text-xs leading-relaxed text-faint">
+          Copy each share and store it out-of-band — paper, a safe, or with trusted people.
+          Storing all shares in one place defeats the purpose.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function VaultSetupPage() {
   const router = useRouter();
   const { notify } = useToast();
@@ -47,6 +144,28 @@ export default function VaultSetupPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [stored, setStored] = useState<boolean[]>([]);
+  const [ceremonyId, setCeremonyId] = useState<number | null>(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    getCryptoMaterial().then((mat) => {
+      if (mat.wrapped_vmk) { router.replace("/vault"); return; }
+      setReady(true);
+    }).catch((e) => {
+      if (e instanceof Error && /404/.test(e.message)) setReady(true);
+      else setErr("Sign in before creating a vault.");
+    });
+    return () => lockVault();
+  }, [router]);
+
+  async function onFinish() {
+    if (!ceremonyId) return;
+    setBusy(true);
+    try {
+      await finalizeCeremony(ceremonyId, stored.map((ok, i) => ok ? i + 1 : 0).filter(Boolean));
+      setShares([]); setStored([]); lockVault(); router.push("/vault");
+    } catch (e) { setErr(e instanceof Error ? e.message : "Finalization failed"); }
+    finally { setBusy(false); }
+  }
 
   const s = strength(passphrase);
   const canContinue = passphrase.length >= 12 && passphrase === confirm;
@@ -58,7 +177,10 @@ export default function VaultSetupPage() {
     threshold <= total &&
     total <= MAX_POLICY_N;
 
+  useEffect(()=>subscribe(()=>{if(!isUnlocked()){setShares([]);setStored([]);setPassphrase("");setConfirm("");setStep(1);}}),[]);
+
   async function onGenerate() {
+    const before=currentEpoch();
     setErr("");
     setBusy(true);
     try {
@@ -67,22 +189,23 @@ export default function VaultSetupPage() {
         threshold,
         total,
       );
-      await putCryptoMaterial({
+      // Single-writer: ceremony owns (k/n/generation) first, then material only.
+      const draft = await postRecoveryCeremony({
+        expected_revision: 0,
+        recovery_threshold: threshold,
+        recovery_total: total,
+        recovery_generation: generation,
+        initial_material: {
+        expected_revision: 0,
         wrapped_vmk: material.wrapped_vmk_b64,
         vmk_crypto_version: CRYPTO_VERSION,
         vmk_kdf_algorithm: "PBKDF2-SHA256",
         vmk_kdf_salt: material.vmk_kdf_salt_b64,
         vmk_kdf_parameters: material.vmk_kdf_parameters,
-        recovery_threshold: threshold,
-        recovery_total: total,
-        recovery_generation: generation,
+        },
       });
-      // Commit the ceremony binding (generation + policy). Server stores no shares.
-      await postRecoveryCeremony({
-        recovery_threshold: threshold,
-        recovery_total: total,
-        recovery_generation: generation,
-      }).catch(() => undefined);
+      assertEpoch(before);
+      setCeremonyId(draft.ceremony_id ?? null);
       setShares(freshShares);
       setStored(freshShares.map(() => false));
       // The passphrase has served its purpose (KEK derived + VMK wrapped);
@@ -90,65 +213,31 @@ export default function VaultSetupPage() {
       setPassphrase("");
       setConfirm("");
       setStep(4);
-      notify("success", "Vault created. Store your shares now.");
+      notify("success", "Draft created. Store every share, then complete setup.");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Setup failed");
     } finally {
+      setPassphrase(""); setConfirm("");
       setBusy(false);
     }
   }
 
-  function downloadShares() {
-    let generation = "";
-    try {
-      generation = shares.length ? parseShare(shares[0]).generation : "";
-    } catch {
-      generation = "";
-    }
-    const blob = new Blob(
-      [[`LegacyLock recovery shares (${threshold} of ${total} required)\nRecovery set: ${generation}\nStored: ${new Date().toISOString()}\n\n`, ...shares.map((s, i) => `Share ${i + 1}:\n${s}\n\n`)].join("")],
-      { type: "text/plain" },
-    );
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "legacylock-shares.txt";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
-      <h1 className="text-2xl font-bold">Vault setup</h1>
+      <p className="supporting">Vault setup</p>
+      <h1 className="page-title mt-1">{step === 4 ? "Save your recovery shares" : step === 2 ? "Create your vault" : step === 3 ? "Generate your key" : "Choose your recovery policy"}</h1>
 
-      {/* Stepper */}
-      <ol className="my-6 flex items-center gap-2 text-sm" aria-label="Setup progress">
-        {["Policy", "Passphrase", "Generate", "Shares"].map((label, i) => (
-          <li
-            key={label}
-            className="flex items-center gap-2"
-            aria-current={step === i + 1 ? "step" : undefined}
-          >
-            <span
-              className={clsx(
-                "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold",
-                step > i + 1 ? "bg-success text-black" : step === i + 1 ? "bg-accent text-black" : "bg-raised text-muted",
-              )}
-            >
-              {step > i + 1 ? <Check className="h-3.5 w-3.5" /> : i + 1}
-            </span>
-            <span className={step === i + 1 ? "text-text" : "text-muted"}>{label}</span>
-            {i < 3 && <span className="mx-1 text-faint">—</span>}
-          </li>
-        ))}
-      </ol>
+      <div className="my-6">
+        <Stepper steps={["Policy", "Passphrase", "Generate", "Shares"]} current={step} />
+      </div>
 
       {step === 1 && (
-        <div className="card flex flex-col gap-4">
-          <p className="text-sm text-muted">
+        <div className="surface-lg flex flex-col gap-4">
+          <p className="text-sm leading-relaxed text-muted">
             Choose how many recovery shares to create (n) and how many are needed to
-            recover (k). Any {`k of n`} shares reconstruct your vault key, locally.
-            Existing vaults stay on their original policy — changing it later
-            invalidates old shares.
+            recover (k). Any k of n shares reconstruct your vault key, locally.
+            Existing vaults keep their key. Resharing never revokes old quorums.
+            If setup is interrupted, restart with fresh shares and discard the abandoned set.
           </p>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -195,10 +284,9 @@ export default function VaultSetupPage() {
       )}
 
       {step === 2 && (
-        <div className="card flex flex-col gap-4">
-          <p className="text-sm text-muted">
-            This passphrase unlocks your vault keys. It must be distinct from your login
-            password and is never sent to the server.
+        <div className="surface-lg flex flex-col gap-4">
+          <p className="text-sm leading-relaxed text-muted">
+            This passphrase protects the key to your private messages. It never leaves this browser.
           </p>
           <div>
             <label className="label" htmlFor="pass">Vault passphrase</label>
@@ -213,8 +301,8 @@ export default function VaultSetupPage() {
             />
             {passphrase && (
               <div className="mt-2">
-                <div className="h-1.5 rounded bg-raised">
-                  <div className={clsx("h-1.5 rounded bg-accent transition-all", s.width)} />
+                <div className="h-1.5 rounded-full bg-raised">
+                  <div className={clsx("h-1.5 rounded-full bg-accent transition-all", s.width)} />
                 </div>
                 <p className="mt-1 text-xs text-muted" aria-live="polite">{s.label}</p>
               </div>
@@ -234,6 +322,9 @@ export default function VaultSetupPage() {
               <p className="mt-1 text-xs text-danger">Passphrases do not match.</p>
             )}
           </div>
+          <p className="text-xs leading-relaxed text-faint">
+            Your login password and vault passphrase serve different purposes.
+          </p>
           <div className="flex justify-between">
             <button type="button" className="btn-ghost" onClick={() => setStep(1)}>
               <ArrowLeft className="h-4 w-4" />
@@ -248,22 +339,28 @@ export default function VaultSetupPage() {
       )}
 
       {step === 3 && (
-        <div className="card flex flex-col items-start gap-4">
-          <div className="flex items-center gap-2">
-            <KeyRound className="h-5 w-5 text-accent" />
-            <h2 className="font-semibold">Generate your vault key</h2>
+        <div className="surface-lg flex flex-col items-center gap-4 py-10 text-center">
+          <span className={clsx(
+            "flex h-14 w-14 items-center justify-center rounded-full bg-raised",
+            busy && "motion-safe:animate-pulse",
+          )} aria-hidden="true">
+            <KeyRound className="h-6 w-6 text-accent" />
+          </span>
+          <div>
+            <h2 className="font-semibold">{busy ? "Creating your private vault" : "Generate your vault key"}</h2>
+            <p className="mx-auto mt-1 max-w-sm text-sm leading-relaxed text-muted">
+              {busy
+                ? "A unique vault key is being created locally. Your key will never be sent to LegacyLock."
+                : `Your browser will generate a random 256-bit vault key, split it into ${total} shares (any ${threshold} recover), and upload only the wrapped key.`}
+            </p>
           </div>
-          <p className="text-sm text-muted">
-            Your browser will generate a random 256-bit vault key, split it into {total} Shamir
-            shares (any {threshold} recover), and upload only the wrapped key. This takes a moment.
-          </p>
           {err && <p role="alert" className="text-sm text-danger">{err}</p>}
           <div className="flex gap-2">
             <button type="button" className="btn-ghost" disabled={busy} onClick={() => setStep(2)}>
               <ArrowLeft className="h-4 w-4" />
               Back
             </button>
-            <button type="button" className="btn-primary" disabled={busy} onClick={onGenerate}>
+            <button type="button" className="btn-primary" disabled={busy || !ready} onClick={onGenerate}>
               {busy && <Spinner />}
               {busy ? "Generating…" : "Generate vault key"}
             </button>
@@ -272,65 +369,16 @@ export default function VaultSetupPage() {
       )}
 
       {step === 4 && (
-        <div className="flex flex-col gap-4">
-          <div className="card border-warn">
-            <p className="flex items-start gap-2 text-sm">
-              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warn" />
-              <span>
-                <strong>Write these down now — shown once.</strong> Any {threshold} of {total} shares
-                recover your vault. Distribute them out-of-band (paper, safe, trusted people).
-                LegacyLock never transmits raw shares. All shares below belong to one recovery
-                set — never mix them with shares from another setup
-                {(() => {
-                  try {
-                    const g = shares.length ? parseShare(shares[0]).generation : "";
-                    return g ? ` (set ${g.slice(0, 8)}…)` : "";
-                  } catch {
-                    return "";
-                  }
-                })()}
-                .
-              </span>
-            </p>
-          </div>
-          {shares.map((share, i) => (
-            <div key={i} className="card flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold">Share {i + 1} of {total}</span>
-                <CopyButton text={share} />
-              </div>
-              <code data-testid={`share-${i + 1}`} className="break-all rounded-md bg-raised p-3 font-mono text-xs">{share}</code>
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-muted">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 accent-[#d4af37]"
-                  checked={stored[i] ?? false}
-                  onChange={() => setStored((prev) => prev.map((v, j) => (j === i ? !v : v)))}
-                />
-                I have stored share {i + 1} somewhere safe
-              </label>
-            </div>
-          ))}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className="btn-ghost" onClick={downloadShares}>
-              <Download className="h-4 w-4" />
-              Download shares (.txt)
-            </button>
-            <button
-              type="button"
-              className="btn-primary ml-auto"
-              disabled={!stored.length || !stored.every(Boolean)}
-              onClick={() => router.push("/vault")}
-            >
-              <ShieldCheck className="h-4 w-4" />
-              Finish — open my vault
-            </button>
-          </div>
-          {(!stored.length || !stored.every(Boolean)) && (
-            <p className="text-xs text-faint">Confirm all {total} shares are stored to continue.</p>
-          )}
-        </div>
+        <ShareStep
+          shares={shares}
+          threshold={threshold}
+          total={total}
+          stored={stored}
+          setStored={setStored}
+          onFinish={onFinish}
+        />
       )}
+      {step === 4 && err && <p role="alert" className="text-danger">{err}</p>}
     </main>
   );
 }

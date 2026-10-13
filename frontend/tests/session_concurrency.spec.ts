@@ -1,0 +1,32 @@
+import {test, expect} from "@playwright/test";
+import {freshOwner, requireLiveBackend} from "./e2e-guard";
+
+test("two expired tabs share one refresh; wrong action password preserves login; logout reaches both tabs", async ({context, request}) => {
+  await requireLiveBackend(request,"Session concurrency");
+  const password="Concurrent-owner-test-1234";
+  const email=await freshOwner(request,password);
+  const origin=process.env.PLAYWRIGHT_BASE_URL??"http://localhost:3000";
+  const login=await context.request.post(`${origin}/api/auth/login`,{data:{email,password},headers:{Origin:origin}});
+  expect(login.ok()).toBe(true);
+  await context.clearCookies({name:"legacylock_owner_session"});
+  let refreshes=0;
+  context.on("request",req=>{if(new URL(req.url()).pathname==="/api/auth/refresh")refreshes++;});
+  const first=await context.newPage(),second=await context.newPage();
+  await Promise.all([first.goto("/home"),second.goto("/home")]);
+  await expect(first.getByRole("link",{name:"Vault",exact:true}).first()).toBeVisible();
+  await expect(second.getByRole("link",{name:"Vault",exact:true}).first()).toBeVisible();
+  expect(refreshes).toBe(1);
+  await first.goto("/heartbeat");
+  await first.getByRole("button",{name:/trigger vault/i}).click();
+  await first.getByLabel("Login password").fill("incorrect-password-1234");
+  await first.getByRole("checkbox",{name:/releases access for my trusted people/i}).check();
+  await first.getByRole("button",{name:"Trigger now"}).click();
+  await expect(first.getByText("Invalid password",{exact:true})).toBeVisible();
+  expect(refreshes).toBe(1);
+  expect((await context.request.get(`${origin}/api/auth/me`)).status()).toBe(200);
+  await first.getByRole("button",{name:"Cancel",exact:true}).click();
+  await first.getByRole("button",{name:"Log out",exact:true}).first().click();
+  await expect(first).toHaveURL(/\/$/);
+  await expect(second).toHaveURL(/\/$/);
+  expect((await context.request.get(`${origin}/api/auth/me`)).status()).toBe(401);
+});

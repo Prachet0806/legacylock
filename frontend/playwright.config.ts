@@ -12,12 +12,13 @@ export default defineConfig({
   // manual `npm run dev`. Reuses your dev server locally when one is up.
   // NEXT_PUBLIC_API_URL is forwarded so the dev server targets the E2E backend.
   webServer: {
-    command: "npm run dev",
+    command: process.env.E2E_PRODUCTION === "1" ? "node scripts/standalone.cjs" : "node node_modules/next/dist/bin/next dev",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 180000,
     env: {
-      NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000",
+      NEXT_PUBLIC_API_URL: "/api",
+      API_UPSTREAM: process.env.API_UPSTREAM ?? "http://localhost:8000",
     },
   },
 });

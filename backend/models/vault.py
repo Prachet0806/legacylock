@@ -1,6 +1,16 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import relationship
 
 from db import Base
@@ -16,6 +26,7 @@ class Vault(Base):
     # vault", never "whichever .first() happens to return".
     is_primary = Column(Boolean, nullable=False, default=True)
     wrapped_vmk = Column(Text, nullable=True)
+    material_revision = Column(Integer, nullable=False, default=0, server_default="0")
     # Per-vault Shamir recovery policy (k-of-n). Legacy rows default to 2-of-3.
     recovery_threshold = Column(Integer, nullable=False, default=2, server_default="2")
     recovery_total = Column(Integer, nullable=False, default=3, server_default="3")
@@ -58,5 +69,14 @@ class Vault(Base):
             unique=True,
             sqlite_where=(is_primary == True),  # noqa: E712
             postgresql_where=(is_primary == True),  # noqa: E712
+        ),
+        CheckConstraint(
+            "recovery_threshold >= 1 AND recovery_threshold <= recovery_total "
+            "AND recovery_total >= 1 AND recovery_total <= 10",
+            name="ck_vault_recovery_range",
+        ),
+        CheckConstraint(
+            "recovery_status IN ('READY','DRAFT','LEGACY','UNINITIALIZED')",
+            name="ck_vault_recovery_status",
         ),
     )

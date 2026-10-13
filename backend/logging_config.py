@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import sys
 from datetime import UTC, datetime
 from typing import Any
@@ -42,9 +43,12 @@ class SensitiveDataFilter(logging.Filter):
             for key in self.SENSITIVE_KEYS:
                 if key in lowered:
                     return "[REDACTED]"
-            # Redact email-like and long base64 blobs
+            # Redact email-like and long base64 blobs, but preserve URLs
             if "@" in value and "." in value and len(value) < 320:
-                return "[REDACTED-EMAIL]"
+                if not (lowered.startswith("http://") or lowered.startswith("https://")):
+                    return "[REDACTED-EMAIL]"
+            value = re.sub(r"(/access/invite/)[^/\s?]+", r"\1[REDACTED]", value)
+            value = re.sub(r"([?&#](?:token|code|invitation_hash)=)[^&\s]+", r"\1[REDACTED]", value)
             return value
         if isinstance(value, dict):
             return {
@@ -57,6 +61,10 @@ class SensitiveDataFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
+            record.msg = re.sub(r"(/access/invite/)[^/\s?]+", r"\1[REDACTED]", record.msg)
+            record.msg = re.sub(
+                r"([?&#](?:token|code|invitation_hash)=)[^&\s]+", r"\1[REDACTED]", record.msg
+            )
             lowered = record.msg.lower()
             for key in self.SENSITIVE_KEYS:
                 if key in lowered:
@@ -149,8 +157,12 @@ def setup_logging() -> None:
     audit_handler = logging.StreamHandler(sys.stdout)
     audit_handler.setFormatter(JSONFormatter())
     audit_handler.addFilter(AuditFilter())
+    audit_handler.addFilter(SensitiveDataFilter())
     audit_logger.addHandler(audit_handler)
     audit_logger.propagate = False
+    for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        for existing in logging.getLogger(name).handlers:
+            existing.addFilter(SensitiveDataFilter())
 
 
 def log_audit(

@@ -3,11 +3,9 @@
 import base64
 import uuid
 
-import pytest
-
 TRIGGER_BODY = {"password": "TestPass123!Long", "confirm": True}
 RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
-_WMEK = base64.b64encode(b"0" * 32).decode()
+_WMEK = base64.b64encode(b"0" * 40).decode()
 _CT = base64.b64encode(b"x" * 16).decode()
 
 
@@ -23,7 +21,14 @@ def _owner(client, email):
         db.add(user)
         db.commit()
         db.refresh(user)
-        vault = Vault(user_id=user.id, name="Primary Vault", is_primary=True)
+        vault = Vault(
+            user_id=user.id,
+            name="Primary Vault",
+            is_primary=True,
+            wrapped_vmk=_WMEK,
+            material_revision=1,
+            recovery_status="LEGACY",
+        )
         db.add(vault)
         db.commit()
         db.refresh(vault)
@@ -47,7 +52,7 @@ def _beneficiary_of(client, owner_headers, name="Ben", email=None):
     link = client.post(f"/beneficiaries/{ben_id}/invite", headers=owner_headers).json()[
         "invitation_link"
     ]
-    raw = link.rsplit("/", 1)[-1]
+    raw = link.split("token=", 1)[-1]
     accepted = client.post(f"/access/invite/{raw}/accept")
     assert accepted.status_code == 200
     ben_db_id = accepted.json()["beneficiary_id"]
@@ -56,8 +61,11 @@ def _beneficiary_of(client, owner_headers, name="Ben", email=None):
         b = db.query(Beneficiary).filter(Beneficiary.id == ben_db_id).first()
         assert b is not None
         token = create_access_token(
-            b.id, b.vault_id, role="beneficiary",
+            b.id,
+            b.vault_id,
+            role="beneficiary",
             expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+            jti=b.session_jti,
         )
     finally:
         db.close()
@@ -70,12 +78,24 @@ class TestCrossTenantIsolation:
         other = _owner(client, f"other-{uuid.uuid4().hex[:8]}@example.com")
         other_mid = client.post(
             "/vault/messages",
-            json={"label": "other-secret", "ciphertext": _CT, "wrapped_mek": _WMEK},
+            json={
+                "label": "other-secret",
+                "ciphertext": _CT,
+                "material_revision": 1,
+                "wrapped_mek": _WMEK,
+                "crypto_metadata": {"iv": base64.b64encode(b"i" * 12).decode()},
+            },
             headers=other,
         ).json()["id"]
         own_mid = client.post(
             "/vault/messages",
-            json={"label": "own-secret", "ciphertext": _CT, "wrapped_mek": _WMEK},
+            json={
+                "label": "own-secret",
+                "ciphertext": _CT,
+                "material_revision": 1,
+                "wrapped_mek": _WMEK,
+                "crypto_metadata": {"iv": base64.b64encode(b"i" * 12).decode()},
+            },
             headers=auth,
         ).json()["id"]
         bh, _ = _beneficiary_of(client, auth)
@@ -96,7 +116,10 @@ class TestSessionIsolation:
         assert client.get("/vault/messages", headers=bh).status_code == 401
         assert client.get("/auth/me", headers=bh).status_code == 401
         assert client.get("/vault/status", headers=bh).status_code == 401
-        assert client.post("/vault/trigger", json=TRIGGER_BODY, headers=bh).status_code in (401, 422)
+        assert client.post("/vault/trigger", json=TRIGGER_BODY, headers=bh).status_code in (
+            401,
+            422,
+        )
 
     def test_owner_cannot_call_beneficiary_endpoints(self, client, auth):
         assert client.get("/access/status", headers=auth).status_code == 401
@@ -115,10 +138,10 @@ class TestDatabaseZeroKnowledge:
         # Use a distinctive login password and invitation flow, then scan.
         email = f"zk-{uuid.uuid4().hex[:8]}@example.com"
         password = f"ZkSecret-{uuid.uuid4().hex}!"
+        from datetime import UTC, datetime
+
         from models import User, Vault
         from services.auth import hash_password
-
-        from datetime import UTC, datetime
 
         db = SessionLocal()
         try:
@@ -130,7 +153,14 @@ class TestDatabaseZeroKnowledge:
             db.add(user)
             db.commit()
             db.refresh(user)
-            vault = Vault(user_id=user.id, name="Primary Vault", is_primary=True)
+            vault = Vault(
+                user_id=user.id,
+                name="Primary Vault",
+                is_primary=True,
+                wrapped_vmk=_WMEK,
+                material_revision=1,
+                recovery_status="LEGACY",
+            )
             db.add(vault)
             db.commit()
         finally:
@@ -149,15 +179,23 @@ class TestDatabaseZeroKnowledge:
             db.close()
         client.post(
             "/vault/messages",
-            json={"label": "zk", "ciphertext": _CT, "wrapped_mek": _WMEK},
+            json={
+                "label": "zk",
+                "ciphertext": _CT,
+                "material_revision": 1,
+                "wrapped_mek": _WMEK,
+                "crypto_metadata": {"iv": base64.b64encode(b"i" * 12).decode()},
+            },
             headers=owner_h,
         )
         bh, raw_invite = _beneficiary_of(client, owner_h)
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=owner_h)
         client.get("/access/messages", headers=bh)
         client.request(
-            "DELETE", "/vault/messages",
-            json={"password": password, "confirm": True}, headers=owner_h,
+            "DELETE",
+            "/vault/messages",
+            json={"password": password, "confirm": True},
+            headers=owner_h,
         )
 
         secrets = [password, raw_invite, sentinel_pw]
@@ -169,9 +207,11 @@ class TestDatabaseZeroKnowledge:
                 if table == "alembic_version":
                     continue
                 cols = [c["name"] for c in insp.get_columns(table)]
-                rows = db.execute(
-                    __import__("sqlalchemy").text(f"SELECT * FROM {table}")
-                ).mappings().all()
+                rows = (
+                    db.execute(__import__("sqlalchemy").text(f"SELECT * FROM {table}"))
+                    .mappings()
+                    .all()
+                )
                 for row in rows:
                     for c in cols:
                         val = row.get(c)

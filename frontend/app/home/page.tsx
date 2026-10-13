@@ -2,124 +2,142 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import {
-  ArrowRight,
-  HeartPulse,
-  KeyRound,
-  ShieldCheck,
-  Timer,
-  Users,
-  Vault as VaultIcon,
-} from "lucide-react";
-import { getStats } from "../../lib/client";
+import { ArrowRight, CheckCircle2, Vault as VaultIcon } from "lucide-react";
+import { checkin, getHeartbeat, getRecoveryPolicy, getStats, getVaultStatus, nextDeadline } from "../../lib/client";
+import { useToast } from "../../components/toast";
+import { SecurityChecklist } from "../../components/security";
+import { formatCountdown, stateTone } from "../../components/vault-ui";
 import { StatusChip } from "../../components/ui";
 
-const STEPS = [
-  {
-    icon: KeyRound,
-    title: "Encrypt",
-    hint: "Messages are encrypted in your browser with AES-256-GCM. The server only ever sees ciphertext.",
-  },
-  {
-    icon: Timer,
-    title: "Check in",
-    hint: "Confirm you're around on your own schedule. Missed check-ins move the vault toward release.",
-  },
-  {
-    icon: HeartPulse,
-    title: "Release",
-    hint: "After the grace period, the vault transitions to TRIGGERED — automatically and idempotently.",
-  },
-  {
-    icon: Users,
-    title: "Recover",
-    hint: "Beneficiaries combine k-of-n Shamir shares to reconstruct the key and decrypt — locally.",
-  },
-];
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 18) return "Good afternoon";
+  return "Good evening";
+}
 
 export default function Dashboard() {
+  const { notify } = useToast();
   const [status, setStatus] = useState<string | null>(null);
   const [counts, setCounts] = useState<{ messages: number; beneficiaries: number } | null>(null);
+  const [deadline, setDeadline] = useState<string | null>(null);
+  const [lastCheckin, setLastCheckin] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<{ threshold: number; total: number; assigned: number } | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     (async () => {
+      let beneficiaryCount = 0;
       try {
         const s = await getStats();
         setStatus(s.vault_status);
         setCounts({ messages: s.message_count, beneficiaries: s.beneficiary_count });
+        beneficiaryCount = s.beneficiary_count;
       } catch {
         /* logged out — landing content still renders */
+      }
+      try {
+        const hb = await getHeartbeat();
+        setDeadline(nextDeadline(hb));
+        setLastCheckin(hb.last_check_in ?? null);
+      } catch {
+        /* heartbeat may not exist yet */
+      }
+      try {
+        const policy = await getRecoveryPolicy().catch(() => null);
+        if (policy) setRecovery({ threshold: policy.recovery_threshold, total: policy.recovery_total, assigned: beneficiaryCount });
+      } catch {
+        /* ignore */
       }
     })();
   }, []);
 
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function onCheckin() {
+    try {
+      await checkin();
+      const [hb, vs] = await Promise.all([getHeartbeat(), getVaultStatus()]);
+      setDeadline(nextDeadline(hb));
+      setLastCheckin(hb.last_check_in ?? null);
+      setStatus(vs.status);
+      notify("success", "Checked in — deadline extended.");
+    } catch {
+      notify("error", "Check-in failed. Are you logged in?");
+    }
+  }
+
+  const tone = stateTone(status);
+  const heroLabel = status === "triggered" ? "RELEASED" : status === "grace" ? "GRACE PERIOD" : "ACTIVE";
+
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10">
-      {/* Hero */}
-      <section className="flex flex-col items-start gap-4 py-8">
-        <div className="flex items-center gap-2">
-          <VaultIcon className="h-8 w-8 text-accent" />
-          {status && (
-            <StatusChip tone={status === "triggered" ? "danger" : status === "grace" ? "warn" : "success"}>
-              {status.toUpperCase()}
-            </StatusChip>
-          )}
-        </div>
-        <h1 className="max-w-2xl text-4xl font-bold leading-tight">
-          Your legacy, sealed with <span className="text-accent">zero knowledge</span>.
-        </h1>
-        <p className="max-w-xl text-muted">
-          LegacyLock stores your sensitive messages encrypted and releases them to your
-          beneficiaries only after prolonged inactivity. The server can never read your data —
-          not your messages, not your keys, not your shares.
+    <main className="mx-auto max-w-5xl px-4 py-8 sm:py-10">
+      <p className="text-sm text-muted">{greeting()}</p>
+      <h1 className="page-title mt-1 text-balance">Your legacy is protected.</h1>
+
+      {/* Hero — heartbeat countdown is the product's heartbeat */}
+      <section className="surface-hero mt-6" aria-label="Vault status">
+        <StatusChip tone={tone} pulse={status === "grace"} className="mx-auto">
+          <span aria-live="polite">● {heroLabel}</span>
+        </StatusChip>
+        <p className="eyebrow mt-6">Next check-in</p>
+        <p className="mt-2 font-mono text-4xl font-bold tabular-nums tracking-tight sm:text-5xl" aria-live="off">
+          {formatCountdown(deadline, now)}
         </p>
-        <div className="flex gap-3">
-          <Link href="/vault/setup" className="btn-primary">
-            Set up your vault
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-          <Link href="/vault" className="btn-ghost">
-            Open vault
-          </Link>
-        </div>
-        {counts && (
-          <div className="mt-2 flex gap-2">
-            <span className="chip">{counts.messages} messages</span>
-            <span className="chip">{counts.beneficiaries} beneficiaries</span>
-          </div>
-        )}
+        <p className="supporting mt-2">until check-in</p>
+        <button type="button" className="btn-primary mt-6 min-w-44" onClick={onCheckin}>
+          <CheckCircle2 className="h-4 w-4" />
+          Check in
+        </button>
+        <p className="mt-4 text-xs text-faint">
+          Last check-in: {lastCheckin ? new Date(lastCheckin).toLocaleString() : "never"}
+        </p>
       </section>
 
-      {/* How it works */}
-      <section className="grid gap-4 py-8 sm:grid-cols-2 lg:grid-cols-4">
-        {STEPS.map((s, i) => {
-          const Icon = s.icon;
-          return (
-            <div key={s.title} className="card flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <span className="flex h-8 w-8 items-center justify-center rounded-md bg-raised">
-                  <Icon className="h-4 w-4 text-accent" />
-                </span>
-                <span className="text-xs text-faint">Step {i + 1}</span>
-              </div>
-              <h2 className="font-semibold">{s.title}</h2>
-              <p className="text-sm text-muted">{s.hint}</p>
-            </div>
-          );
-        })}
+      {/* Stat tiles */}
+      <section className="mt-4 grid gap-3 sm:grid-cols-3" aria-label="Vault summary">
+        <Link href="/vault" className="stat-tile transition-colors hover:border-faint">
+          <span className="text-3xl font-bold tabular-nums">{counts?.messages ?? "–"}</span>
+          <span className="text-sm text-muted">Private notes</span>
+        </Link>
+        <Link href="/beneficiaries" className="stat-tile transition-colors hover:border-faint">
+          <span className="text-3xl font-bold tabular-nums">{counts?.beneficiaries ?? "–"}</span>
+          <span className="text-sm text-muted">Trusted people</span>
+        </Link>
+        <Link href="/beneficiaries" className="stat-tile transition-colors hover:border-faint">
+          <span className="text-3xl font-bold tabular-nums">
+            {recovery ? `${recovery.assigned} / ${recovery.total}` : counts != null ? `${counts.beneficiaries} / 3` : "–"}
+          </span>
+          <span className="text-sm text-muted">Recovery shares</span>
+        </Link>
       </section>
 
-      {/* Security strip */}
-      <section className="card flex flex-col gap-3 sm:flex-row sm:items-center">
-        <ShieldCheck className="h-8 w-8 shrink-0 text-success" />
-        <div>
-          <h2 className="font-semibold">Server-blind by design</h2>
-          <p className="text-sm text-muted">
-            AES-256-GCM message encryption, PBKDF2 key wrapping, and Shamir threshold recovery —
-            all computed in your browser via WebCrypto. Plaintext, passphrases, and raw shares
-            are never transmitted or logged.
-          </p>
+      {/* Protection checklist — human layer only */}
+      <section className="surface-lg mt-4">
+        <div className="flex items-center gap-2">
+          <VaultIcon className="h-4 w-4 text-accent" />
+          <h2 className="font-semibold">Your protection</h2>
         </div>
+        <div className="mt-4">
+          <SecurityChecklist
+            items={[
+              { label: "Messages encrypted locally", ok: true },
+              { label: "Recovery configured", ok: (counts?.beneficiaries ?? 0) > 0 },
+              {
+                label: counts ? `${counts.beneficiaries} ${counts.beneficiaries === 1 ? "trusted person" : "trusted people"} assigned` : "Trusted people assigned",
+                ok: (counts?.beneficiaries ?? 0) > 0,
+              },
+              { label: "Heartbeat active", ok: status === "active" || status === "grace" },
+            ]}
+          />
+        </div>
+        <Link href="/settings/security" className="mt-4 inline-flex items-center gap-1 text-sm text-muted hover:text-text">
+          How your privacy works
+          <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
       </section>
     </main>
   );

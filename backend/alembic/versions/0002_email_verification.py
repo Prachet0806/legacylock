@@ -22,7 +22,9 @@ def upgrade() -> None:
     op.add_column("user", sa.Column("email_verified_at", sa.DateTime(timezone=True), nullable=True))
     # Grandfather pre-existing (seeded) owners: they proved mailbox control
     # out-of-band; only new registrations must verify.
-    op.execute(sa.text("UPDATE \"user\" SET email_verified_at = created_at WHERE email_verified_at IS NULL"))
+    op.execute(
+        sa.text('UPDATE "user" SET email_verified_at = created_at WHERE email_verified_at IS NULL')
+    )
     op.create_table(
         "email_verification_token",
         sa.Column("id", sa.Integer(), primary_key=True),

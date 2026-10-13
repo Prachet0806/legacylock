@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { requireLiveBackend, requireOk } from "./e2e-guard";
 
 // Same-origin /api prefix regression: refresh cookies must be scoped Path=/ so
 // they survive the edge strip-prefix (browser sees /api/auth/refresh, not
@@ -13,12 +14,11 @@ const BEN_NAME = `Prefix Ben ${Date.now()}`;
 const BEN_EMAIL = `prefix-ben-${Date.now()}@example.com`;
 
 test.beforeAll(async ({ request }) => {
-  const health = await request.get(`${API}/health`).catch(() => null);
-  test.skip(!health || !health.ok(), "prefix spec needs a live backend");
+  await requireLiveBackend(request, "prefix spec");
   const login = await request
     .post(`${API}/auth/login`, { data: { email: OWNER_EMAIL, password: OWNER_PASSWORD } })
     .catch(() => null);
-  test.skip(!login || !login.ok(), "prefix spec needs a seeded owner (seed_dev_user.py)");
+  await requireOk(login, "prefix spec needs a seeded owner");
 });
 
 test("owner refresh cookie survives the /api prefix", async ({ page, request }) => {
@@ -32,7 +32,7 @@ test("owner refresh cookie survives the /api prefix", async ({ page, request }) 
   await page.goto("/");
   await page.getByLabel("Email").fill(OWNER_EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(OWNER_PASSWORD);
-  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/home$/);
 
   // Through the prefix: dev rewrite strips /api, backend sees /auth/refresh.
@@ -49,21 +49,26 @@ test("beneficiary refresh cookie survives the /api prefix", async ({ page, reque
   await page.goto("/");
   await page.getByLabel("Email").fill(OWNER_EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(OWNER_PASSWORD);
-  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/home$/);
 
   await page.goto("/beneficiaries");
+  await page.getByRole("button",{name:"Add person",exact:true}).click();
   await page.getByLabel("Name").fill(BEN_NAME);
   await page.getByLabel("Email").fill(BEN_EMAIL);
   await page.getByRole("button", { name: "Add", exact: true }).click();
   const row = page.locator("li", { hasText: BEN_NAME });
+  await row.getByRole("button",{name:"Manage",exact:true}).click();
   await row.getByRole("button", { name: "Invite" }).click();
-  const linkEl = page.locator("code", { hasText: "/access/invite/" });
+  const linkEl = page.locator("code", { hasText: "/access/invite#" });
   await expect(linkEl).toBeVisible();
   const link = (await linkEl.textContent())?.trim() ?? "";
 
   const benCtx = await page.context().browser()?.newContext();
-  test.skip(!benCtx, "no browser for beneficiary context");
+  if (!benCtx) {
+    if (process.env.CI) throw new Error("no browser for beneficiary context in CI");
+    test.skip(true, "no browser for beneficiary context");
+  }
   const ben = await benCtx!.newPage();
   await ben.goto(link);
   await ben.getByRole("button", { name: "Accept invitation" }).click();

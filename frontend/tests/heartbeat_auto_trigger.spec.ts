@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { requireLiveBackend, requireOk, freshOwner } from "./e2e-guard";
 
 // Automatic dead-man-switch path: owner configures heartbeat -> simulated
 // inactivity (non-prod run-check time travel) drives ACTIVE -> GRACE ->
@@ -8,17 +9,16 @@ import { test, expect } from "@playwright/test";
 // Requires a live backend (NEXT_PUBLIC_API_URL, default :8000) with a seeded
 // owner (E2E_OWNER_EMAIL/PASSWORD). Skips cleanly when unavailable.
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const OWNER_EMAIL = process.env.E2E_OWNER_EMAIL ?? "owner@example.com";
+let OWNER_EMAIL = process.env.E2E_OWNER_EMAIL ?? "owner@example.com";
 const OWNER_PASSWORD = process.env.E2E_OWNER_PASSWORD ?? "DevPassword123456";
 const VAULT_PASSPHRASE = "E2E-Auto-Passphrase-12345";
 
 test.beforeAll(async ({ request }) => {
-  const health = await request.get(`${API}/health`).catch(() => null);
-  test.skip(!health || !health.ok(), "auto-trigger path needs a live backend");
+  await requireLiveBackend(request, "auto-trigger spec");
   const login = await request
     .post(`${API}/auth/login`, { data: { email: OWNER_EMAIL, password: OWNER_PASSWORD } })
     .catch(() => null);
-  test.skip(!login || !login.ok(), "auto-trigger path needs a seeded owner (seed_dev_user.py)");
+  await requireOk(login, "auto-trigger path needs a seeded owner");
 });
 
 test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> recovery", async ({
@@ -27,6 +27,7 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
   request,
 }) => {
   test.setTimeout(240000);
+  OWNER_EMAIL=await freshOwner(request, OWNER_PASSWORD);
   const BODY = `The auto plaintext ${Date.now()}`;
   const LABEL = `Auto Secret ${Date.now()}`;
   const BEN_NAME = `E2E Auto Ben ${Date.now()}`;
@@ -53,7 +54,7 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
   await page.goto("/");
   await page.getByLabel("Email").fill(OWNER_EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(OWNER_PASSWORD);
-  await page.getByRole("button", { name: "Log in" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/home$/);
 
   // --- Owner: vault setup, capture 3 shares (default 2-of-3) ---
@@ -66,20 +67,22 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
   await page.getByRole("button", { name: "Generate vault key" }).click();
   const shares: string[] = [];
   for (const i of [1, 2, 3]) {
+    await page.getByRole("button",{name:`Go to share ${i}`,exact:true}).click();
     const el = page.getByTestId(`share-${i}`);
     await expect(el).toBeVisible({ timeout: 30000 });
     shares.push((await el.textContent())?.trim() ?? "");
+    await page.getByRole("button",{name:"I\'ve stored this safely",exact:true}).click();
   }
   expect(shares.every((s) => s.length > 10)).toBe(true);
-  for (const i of [1, 2, 3]) {
-    await page.getByRole("checkbox", { name: new RegExp(`share ${i}`, "i") }).check();
-  }
-  await page.getByRole("button", { name: /finish/i }).click();
+  await page.getByRole("button", { name: "Complete setup" }).click();
   await expect(page).toHaveURL(/\/vault$/);
+  await page.getByRole("button",{name:"Unlock vault",exact:true}).click();
+  await page.getByLabel("Vault passphrase").fill(VAULT_PASSPHRASE);
+  await page.getByRole("button",{name:"Unlock",exact:true}).click();
 
   // --- Owner: one encrypted message ---
-  await expect(page.getByRole("button", { name: "New message" })).toBeVisible();
-  await page.getByRole("button", { name: "New message" }).click();
+  await expect(page.getByRole("button", { name: "New secret" })).toBeVisible();
+  await page.getByRole("button", { name: "New secret" }).click();
   await page.getByLabel("Label").fill(LABEL);
   await page.getByLabel("Secret text").fill(BODY);
   await page.getByRole("button", { name: "Encrypt and save" }).click();
@@ -87,26 +90,27 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
 
   // --- Owner: heartbeat 30/7 via UI, check in ---
   await page.goto("/heartbeat");
+  await page.getByRole("button",{name:"Edit schedule",exact:true}).click();
   await page.getByLabel("Check-in every (days)").fill("30");
   await page.getByLabel("Grace period (days)").fill("7");
   await page.getByRole("button", { name: "Save schedule" }).click();
-  await expect(page.getByText("Currently: every 30 days, 7 days grace.")).toBeVisible({
-    timeout: 15000,
-  });
+  await expect(page.getByRole("button",{name:"Edit schedule",exact:true})).toBeVisible();
   await page.getByRole("button", { name: "Check in now" }).click();
   await expect(page.getByText("ACTIVE").first()).toBeVisible({ timeout: 15000 });
 
   // --- Owner: add + invite beneficiary BEFORE the trigger ---
   await page.goto("/beneficiaries");
+  await page.getByRole("button",{name:"Add person",exact:true}).click();
   await page.getByLabel("Name").fill(BEN_NAME);
   await page.getByLabel("Email").fill(BEN_EMAIL);
   await page.getByRole("button", { name: "Add", exact: true }).click();
   const row = page.locator("li", { hasText: BEN_NAME });
+  await row.getByRole("button",{name:"Manage",exact:true}).click();
   await row.getByRole("button", { name: "Invite" }).click();
-  const linkEl = page.locator("code", { hasText: "/access/invite/" });
+  const linkEl = page.locator("code", { hasText: "/access/invite#" });
   await expect(linkEl).toBeVisible();
   const link = (await linkEl.textContent())?.trim() ?? "";
-  expect(link).toContain("/access/invite/");
+  expect(link).toContain("/access/invite#");
 
   // --- Time travel +31d: ACTIVE -> GRACE ---
   const grace = await request.post(`${API}/heartbeat/run-check`, {
@@ -142,7 +146,10 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
 
   // --- Beneficiary: accept invite, gate shows triggered, recover ---
   const benCtx = await context.browser()?.newContext();
-  test.skip(!benCtx, "no browser for beneficiary context");
+  if (!benCtx) {
+    if (process.env.CI) throw new Error("no browser for beneficiary context in CI");
+    test.skip(true, "no browser for beneficiary context");
+  }
   const ben = await benCtx!.newPage();
   tap(ben);
   await ben.goto(link);
@@ -153,7 +160,7 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
   await ben.getByRole("button", { name: "Continue" }).click();
   await ben.getByLabel("Share 1").fill(shares[0]);
   await ben.getByLabel("Share 2").fill(shares[1]);
-  await ben.getByRole("button", { name: "Submit shares" }).click();
+  await ben.getByRole("button", { name: "Reconstruct" }).click();
   const msgRow = ben.locator("li", { hasText: LABEL });
   await expect(msgRow).toBeVisible({ timeout: 15000 });
   await msgRow.getByRole("button", { name: "Decrypt" }).click();

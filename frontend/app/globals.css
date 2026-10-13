@@ -2,22 +2,25 @@
 @tailwind components;
 @tailwind utilities;
 
-/* LegacyLock design tokens. Dark is the default theme; the light set is
-   already defined so a future toggle only needs to flip `data-theme`. */
+/* LegacyLock premium vault tokens.
+   Dark-first identity; gold is brand-only (logo, active dot, single hero
+   highlight). Semantic colors carry status, not gold. */
 
 :root,
 [data-theme="dark"] {
-  --bg: 10 12 16;
-  --surface: 17 21 28;
-  --raised: 24 30 40;
-  --border: 36 44 58;
-  --text: 235 238 243;
-  --muted: 158 170 186;
-  --faint: 108 120 138;
+  --bg: 9 11 15;
+  --surface: 16 20 26;
+  --raised: 23 28 35;
+  --border: 36 43 53;
+  --text: 243 245 247;
+  --muted: 154 164 178;
+  --faint: 104 115 132;
   --accent: 212 175 55;
-  --danger: 229 83 83;
-  --success: 74 180 120;
-  --warn: 232 168 56;
+  --accent-ink: 10 10 10;
+  --ring: 212 175 55;
+  --danger: 224 92 92;
+  --success: 88 186 130;
+  --warn: 232 176 72;
   color-scheme: dark;
 }
 
@@ -30,6 +33,8 @@
   --muted: 90 102 118;
   --faint: 140 151 166;
   --accent: 158 124 28;
+  --accent-ink: 255 255 255;
+  --ring: 158 124 28;
   --danger: 190 45 45;
   --success: 46 139 88;
   --warn: 176 118 18;
@@ -40,32 +45,79 @@ html,
 body {
   background-color: rgb(var(--bg));
   color: rgb(var(--text));
+  font-feature-settings: "cv11", "ss01";
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.28);
 }
 
 @layer components {
+  /* Legacy primitives (kept for compatibility during migration). */
   .card {
-    @apply rounded-lg border border-border bg-surface p-5;
+    @apply rounded-2xl border border-border bg-surface p-5 shadow-[0_1px_0_rgb(255_255_255/0.03)_inset,0_12px_32px_-16px_rgb(0_0_0/0.6)];
   }
   .input {
-    @apply w-full rounded-md border border-border bg-raised px-3 py-2 text-sm text-text placeholder:text-faint outline-none focus:border-accent;
+    @apply w-full rounded-xl border border-border bg-raised px-3.5 py-2.5 text-sm text-text placeholder:text-faint outline-none transition-colors focus:border-accent/70 focus:ring-2 focus:ring-accent/25;
   }
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40;
   }
   .btn-primary {
-    @apply btn bg-accent text-black hover:brightness-110;
+    @apply btn bg-accent font-semibold text-black hover:brightness-110 active:brightness-95;
   }
   .btn-ghost {
-    @apply btn border border-border bg-transparent text-text hover:bg-raised;
+    @apply btn border border-border bg-transparent text-text hover:border-faint hover:bg-raised active:bg-raised;
   }
   .btn-danger {
-    @apply btn bg-danger text-white hover:brightness-110;
+    @apply btn bg-danger text-white hover:brightness-110 active:brightness-95;
+  }
+  .btn-secondary {
+    @apply btn border border-border bg-raised text-text hover:bg-surface;
   }
   .label {
-    @apply mb-1 block text-xs font-medium uppercase tracking-wider text-muted;
+    @apply mb-1.5 block text-sm font-medium text-muted;
   }
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs text-muted;
+    @apply inline-flex items-center gap-1.5 rounded-full border border-border bg-raised/60 px-2.5 py-0.5 text-xs text-muted;
+  }
+
+  /* New premium primitives. */
+  .surface-hero {
+    @apply rounded-2xl border border-border bg-surface p-8 text-center shadow-[0_1px_0_rgb(255_255_255/0.04)_inset,0_24px_64px_-24px_rgb(0_0_0/0.7)] sm:p-10;
+  }
+  .surface-lg {
+    @apply rounded-2xl border border-border bg-surface p-6 shadow-[0_1px_0_rgb(255_255_255/0.03)_inset,0_12px_32px_-16px_rgb(0_0_0/0.6)];
+  }
+  .row-item {
+    @apply flex items-center gap-3 border-b border-border/70 px-4 py-3.5 transition-colors last:border-b-0 hover:bg-raised/50;
+  }
+  .section-title {
+    @apply text-lg font-semibold tracking-tight;
+  }
+  .page-title {
+    @apply text-2xl font-semibold tracking-tight sm:text-3xl;
+  }
+  .display-title {
+    @apply text-4xl font-bold leading-[1.05] tracking-tight sm:text-5xl;
+  }
+  .supporting {
+    @apply text-sm leading-relaxed text-muted;
+  }
+  .eyebrow {
+    @apply text-xs font-medium uppercase tracking-[0.14em] text-faint;
+  }
+  .stat-tile {
+    @apply surface-lg flex flex-col gap-1 !p-5 text-left;
+  }
+  .vault-dot {
+    @apply inline-block h-2 w-2 rounded-full;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
   }
 }
 
