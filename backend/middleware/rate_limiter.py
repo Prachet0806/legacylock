@@ -35,6 +35,7 @@ _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
     "/vault/trigger": (5, 30),
     "/vault/reset-status": (5, 30),
 }
+_DYNAMIC_ROUTE_PREFIXES = {"/access/invite", "/access/messages", "/beneficiaries"}
 
 
 class RateLimiterMiddleware(BaseHTTPMiddleware):
@@ -67,7 +68,9 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         "access" segment but have different limits — get independent buckets.
         """
         for prefix, limits in _ROUTE_LIMITS.items():
-            if path.startswith(prefix):
+            if path == prefix or (
+                prefix in _DYNAMIC_ROUTE_PREFIXES and path.startswith(prefix + "/")
+            ):
                 return limits, prefix
         segment = path.split("/")[1] if len(path.split("/")) > 1 else ""
         return (self.requests_per_minute, self.requests_per_hour), f"/{segment}"

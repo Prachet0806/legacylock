@@ -101,7 +101,7 @@ async def register(
     Always returns the same 201 message — enumeration-safe for new, existing
     unverified (re-send), and existing verified (no-op) cases.
     """
-    from services.email_verification import issue_verification
+    from services.email_verification import VerificationCooldown, issue_verification
 
     settings = get_settings()
     expected = settings.registration_invite_code or ""
@@ -137,7 +137,10 @@ async def register(
         else:
             record_audit(db, None, "owner", user.id, "auth.register", {})
     if user.email_verified_at is None:
-        await issue_verification(db, user)
+        from contextlib import suppress
+
+        with suppress(VerificationCooldown):
+            await issue_verification(db, user, enforce_cooldown=True)
     db.commit()
     return RegisterResponse()
 
@@ -195,6 +198,8 @@ async def resend_verification(
     Per-email 5-minute cooldown supplements IP rate limits (VerificationCooldown
     maps to the same generic success so the cooldown itself is not an oracle).
     """
+    import logging
+
     from services.email_verification import VerificationCooldown, issue_verification
 
     email = str(data.email).strip().lower()
@@ -205,8 +210,11 @@ async def resend_verification(
             db.commit()
         except VerificationCooldown:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            db.rollback()
+            logging.getLogger("legacylock.auth").error(  # noqa: TRY400 - omit sensitive DB URL
+                "Verification resend could not be queued: %s", type(exc).__name__
+            )
     return {"message": "If the account needs verification, an email has been sent"}
 
 

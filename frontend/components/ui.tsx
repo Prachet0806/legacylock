@@ -187,12 +187,8 @@ export function Avatar({ name, className }: { name: string; className?: string }
 
 export function ProgressBar({ value, max = 100, tone = "success", className }: { value: number; max?: number; tone?: Tone; className?: string }) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
-  const bar =
-    tone === "success" ? "bg-success" : tone === "warn" ? "bg-warn" : tone === "danger" ? "bg-danger" : tone === "brand" ? "bg-accent" : "bg-faint";
   return (
-    <div className={clsx("h-1.5 overflow-hidden rounded-full bg-raised", className)} role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
-      <div className={clsx("h-full rounded-full transition-all duration-500", bar)} style={{ width: `${pct}%` }} />
-    </div>
+    <progress className={clsx("progress-track", `progress-${tone}`, className)} value={pct} max={100} />
   );
 }
 

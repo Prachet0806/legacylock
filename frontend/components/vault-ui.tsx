@@ -78,9 +78,7 @@ export function RecoveryReadiness({ assigned, threshold, total }: { assigned: nu
       <p className="mt-3 text-sm text-muted">
           {assigned} of {total} current shares assigned to accepted recipients · {threshold} required
       </p>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-raised" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
-        <div className={clsx("h-full rounded-full transition-all", ready ? "bg-success" : "bg-warn")} style={{ width: `${pct}%` }} />
-      </div>
+      <progress className={clsx("progress-track mt-2", ready ? "progress-success" : "progress-warn")} value={pct} max={100} aria-label="Accepted share assignments" />
       {!ready && (
         <p className="mt-3 text-sm text-warn">
             Enroll and assign {threshold - assigned} more {threshold - assigned === 1 ? "trusted person" : "trusted people"}. Assignment metadata does not prove share possession.

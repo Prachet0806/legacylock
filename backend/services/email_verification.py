@@ -43,11 +43,12 @@ async def issue_verification(db: Session, user: User, enforce_cooldown: bool = F
     """Create a fresh single-use token for user, email the link, return raw.
 
     Prior unconsumed tokens are revoked so only the newest link works.
-    With enforce_cooldown=True (public resend endpoint only), a re-issue
+    With enforce_cooldown=True (public registration and resend endpoints), a re-issue
     inside the 5-minute per-email window raises VerificationCooldown instead
     of sending mail — supplementing IP rate limits against email spam.
-    Registration-time issuance never enforces the cooldown.
-    Email-send failure is logged, not raised — the user can resend.
+    Internal test issuance can bypass the cooldown explicitly.
+    This method queues delivery transactionally; a queue failure propagates so
+    registration cannot commit a user with no verification path.
     """
     from services.outbox import enqueue, event
 

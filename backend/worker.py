@@ -12,10 +12,12 @@ from services.outbox import payload_key, work_once
 
 def main():
     settings = get_settings()
+    settings.validate_production()
     payload_key()
     if settings.environment == "production" and not settings.resend_api_key:
         raise RuntimeError("Email credentials required")
     next_check = 0.0
+    delivery_failures = 0
     while True:
         if time.monotonic() >= next_check and settings.heartbeat_enabled:
             try:
@@ -23,16 +25,24 @@ def main():
                     check_heartbeat(db)
                 checkpoint(SessionLocal, "checker")
             except Exception as exc:
-                checkpoint(SessionLocal, "checker", type(exc).__name__)
-                logging.error("Heartbeat pass failed: %s", type(exc).__name__)
+                _record_failure("checker", exc)
             next_check = time.monotonic() + 60
         try:
             work_once(SessionLocal)
             checkpoint(SessionLocal, "delivery")
+            delivery_failures = 0
         except Exception as exc:
-            checkpoint(SessionLocal, "delivery", type(exc).__name__)
-            logging.error("Delivery pass failed: %s", type(exc).__name__)
-        time.sleep(5)
+            _record_failure("delivery", exc)
+            delivery_failures = min(delivery_failures + 1, 4)
+        time.sleep(min(5 * (2 ** delivery_failures), 60))
+
+
+def _record_failure(component: str, exc: Exception) -> None:
+    logging.error("%s pass failed: %s", component, type(exc).__name__)
+    try:
+        checkpoint(SessionLocal, component, type(exc).__name__)
+    except Exception:
+        logging.exception("Could not persist %s failure checkpoint", component)
 
 
 if __name__ == "__main__":

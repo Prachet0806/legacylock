@@ -10,7 +10,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, inspect, text
 
 from config import get_settings
 from db import SessionLocal
@@ -33,12 +33,17 @@ from services.trigger_service import lock_status
 
 
 def inventory(db):
+    schema_revision = (
+        db.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+        if inspect(db.bind).has_table("alembic_version") else None
+    )
     digest = hashlib.sha256()
     anomalies = {
         "invalid_wrapped_key": 0,
         "invalid_message_envelope": 0,
         "oversized_existing_message": 0,
         "uninitialized_with_messages": 0,
+        "schema_revision_mismatch": int(schema_revision != "0008_delivery_attempts"),
     }
     for vault in db.query(Vault).order_by(Vault.id).yield_per(100):
         bundle = [
@@ -101,7 +106,8 @@ def inventory(db):
         return {str(key): count for key, count in db.query(column, func.count()).group_by(column)}
 
     return {
-        "schema_contract": "0008",
+        "schema_revision": schema_revision,
+        "schema_contract": "0008_delivery_attempts",
         "vaults": db.query(Vault).count(),
         "messages": db.query(VaultMessage).count(),
         "beneficiaries": db.query(Beneficiary).count(),

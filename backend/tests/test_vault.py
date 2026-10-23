@@ -3,6 +3,7 @@
 import base64
 
 import pytest
+from fastapi.testclient import TestClient
 
 _WMEK = base64.b64encode(b"0" * 40).decode()
 _IV = base64.b64encode(b"1" * 12).decode()
@@ -55,6 +56,18 @@ class TestVaultAuth:
 
 
 class TestVaultCRUD:
+    def test_message_admission_limit(
+        self, client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from config import get_settings
+
+        monkeypatch.setattr(get_settings(), "max_messages_per_vault", 1)
+        first = client.post("/vault/messages", json=MESSAGE_A, headers=auth)
+        assert first.status_code == 201
+        denied = client.post("/vault/messages", json=MESSAGE_B, headers=auth)
+        assert denied.status_code == 409
+        assert len(client.get("/vault/messages", headers=auth).json()) == 1
+
     def test_list_empty(self, client, auth):
         res = client.get("/vault/messages", headers=auth)
         assert res.status_code == 200

@@ -50,6 +50,29 @@ test("principal change locks the key and invalidates in-flight cryptography", as
   await expect(pending).rejects.toThrow(/Session changed/);
 });
 
+test("hidden-tab deadline locks even when its timer never runs", async () => {
+  const original = Date.now;
+  await session.setupVault("hidden-deadline-test-passphrase");
+  const hiddenAt = original();
+  try {
+    session.noteVaultVisibility(true);
+    Date.now = () => hiddenAt + 5 * 60 * 1000 + 1;
+    expect(session.isUnlocked()).toBe(false);
+    await expect(session.encrypt("must stay locked")).rejects.toThrow(/locked/);
+  } finally { Date.now = original; session.lockVault(); }
+});
+
+test("idle deadline is checked before extending activity", async () => {
+  const original = Date.now;
+  await session.setupVault("idle-deadline-test-passphrase");
+  const unlockedAt = original();
+  try {
+    Date.now = () => unlockedAt + 15 * 60 * 1000 + 1;
+    session.noteVaultActivity();
+    expect(session.isUnlocked()).toBe(false);
+  } finally { Date.now = original; session.lockVault(); }
+});
+
 test("sha256Hex matches known vector", async () => {
   expect(await sha256Hex("abc")).toBe(
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",

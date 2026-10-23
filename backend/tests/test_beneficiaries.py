@@ -1,6 +1,7 @@
 """Tests for /beneficiaries routes."""
 
 import pytest
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +29,27 @@ class TestBeneficiaryAuth:
 
 
 class TestBeneficiaryCRUD:
+    def test_vault_admission_limit(
+        self, client: TestClient, auth: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from config import get_settings
+
+        monkeypatch.setattr(get_settings(), "max_beneficiaries_per_vault", 2)
+        for index in range(2):
+            response = client.post(
+                "/beneficiaries",
+                json={"name": f"Person {index}", "email": f"person{index}@test.com"},
+                headers=auth,
+            )
+            assert response.status_code == 201
+        denied = client.post(
+            "/beneficiaries",
+            json={"name": "Third", "email": "third@test.com"},
+            headers=auth,
+        )
+        assert denied.status_code == 409
+        assert len(client.get("/beneficiaries", headers=auth).json()) == 2
+
     def test_add_beneficiary(self, client, auth):
         res = client.post(
             "/beneficiaries", json={"name": "Alice", "email": "alice@test.com"}, headers=auth

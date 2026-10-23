@@ -50,7 +50,7 @@ jobs:
       - name: Backend locked dependency audit
         if: matrix.postgres == '0'
         run: pip-audit -r requirements.lock.txt --no-deps --disable-pip
-      - name: Render migration SQL
+      - name: Migration SQL
         run: alembic upgrade head --sql > /tmp/migration.sql
   frontend:
     runs-on: ubuntu-latest

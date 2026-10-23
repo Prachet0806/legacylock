@@ -6,7 +6,7 @@ export function middleware(request: NextRequest) {
   const api = process.env.NEXT_PUBLIC_API_URL?.trim();
   const origin = api?.startsWith("https://") || api?.startsWith("http://") ? new URL(api).origin : "";
   const policy = ["default-src 'self'", `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev ? " 'unsafe-eval'" : ""}`,
-    "style-src 'self' 'unsafe-inline'", "img-src 'self' data:", `connect-src 'self' ${origin}${dev ? " ws: wss:" : ""}`,
+    "style-src 'self'", "img-src 'self' data:", `connect-src 'self' ${origin}${dev ? " ws: wss:" : ""}`,
     "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'"].join("; ");
   const headers = new Headers(request.headers);
   headers.set("x-nonce", nonce);

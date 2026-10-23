@@ -28,7 +28,7 @@ class TestBeneficiarySessionBinding:
         assert inv.status_code == 200
         link = inv.json()["invitation_link"]
         raw = link.split("token=", 1)[-1]
-        acc = client.post(f"/access/invite/{raw}/accept")
+        acc = client.post("/access/invitation/accept", json={"token": raw})
         assert acc.status_code == 200
         # Cookies carry the session; extract for direct use.
         access = acc.cookies.get("legacylock_beneficiary_session")

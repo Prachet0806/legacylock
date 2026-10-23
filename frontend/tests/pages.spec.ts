@@ -42,8 +42,8 @@ test("production CSP uses fresh nonces, permits hydration and blocks an unapprov
   expect(refreshed!.headers()["content-security-policy"]).not.toContain(`'nonce-${nonce}'`);
 });
 
-test("/access/invite/[hash] renders", async ({ page }) => {
-  await page.goto("/access/invite/deadbeef");
+test("fragment invitation route renders", async ({ page }) => {
+  await page.goto("/access/invite#token=deadbeef");
   await expect(page.getByRole("heading", { name: "Beneficiary invitation" })).toBeVisible();
 });
 

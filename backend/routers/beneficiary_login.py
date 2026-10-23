@@ -17,6 +17,10 @@ from services.sessions import issue
 from services.trigger_service import lock_status
 
 router = APIRouter(prefix="/access/login", tags=["beneficiary-login"])
+_LINK_RESPONSE = (
+    "If an accepted beneficiary matches, a sign-in link will be emailed. "
+    "If you belong to many vaults, enter the recipient ID from your invitation."
+)
 
 
 class LoginRequest(BaseModel):
@@ -31,12 +35,30 @@ class RedeemRequest(BaseModel):
 @router.post("/request")
 def request_link(data: LoginRequest, db=Depends(get_db)):
     now = datetime.now(UTC)
+    email = str(data.email).strip().lower()
     query = db.query(Beneficiary).filter_by(
-        email=str(data.email).strip().lower(), invitation_status="accepted"
+        email=email, invitation_status="accepted"
     )
     if data.beneficiary_id is not None:
         query = query.filter_by(id=data.beneficiary_id)
-    for candidate in query.order_by(Beneficiary.vault_id, Beneficiary.id).limit(10).all():
+    # One durable email-level cooldown prevents a request for an address with
+    # many vaults from generating a burst of repeated provider jobs.
+    recent = (
+        db.query(AuthChallenge.token_hash)
+        .join(Beneficiary, AuthChallenge.beneficiary_id == Beneficiary.id)
+        .filter(
+            Beneficiary.email == email,
+            AuthChallenge.purpose == "login",
+            AuthChallenge.created_at > now - timedelta(minutes=1),
+        )
+        .first()
+    )
+    if recent:
+        return {"message": _LINK_RESPONSE}
+    candidates = query.order_by(Beneficiary.vault_id, Beneficiary.id).limit(11).all()
+    if len(candidates) > 10:
+        return {"message": _LINK_RESPONSE}
+    for candidate in candidates:
         revision = lock_status(db, candidate.vault_id).version
         ben = (
             db.query(Beneficiary)
@@ -48,7 +70,7 @@ def request_link(data: LoginRequest, db=Depends(get_db)):
         if (
             not ben
             or ben.invitation_status != "accepted"
-            or ben.email != str(data.email).strip().lower()
+            or ben.email != email
         ):
             continue
         latest = (
@@ -86,7 +108,7 @@ def request_link(data: LoginRequest, db=Depends(get_db)):
         )
         record_audit(db, ben.vault_id, "beneficiary", ben.id, "auth.challenge_issued", {})
     db.commit()
-    return {"message": "If an accepted beneficiary matches, a sign-in link will be emailed."}
+    return {"message": _LINK_RESPONSE}
 
 
 @router.post("/redeem")

@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { isUnlocked, lockVault, subscribe } from "../crypto-session";
+import { enforceLockDeadline, isUnlocked, lockVault, millisecondsUntilVaultLock, noteVaultActivity, noteVaultVisibility, subscribe } from "../crypto-session";
 
 interface VaultContextValue {
   unlocked: boolean;
@@ -24,36 +24,43 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
     lockVault();
   }, []);
 
-  // Lock policy (documented): hiding the tab starts a 5-minute grace timer;
-  // returning cancels it. Closing/reloading wipes immediately via beforeunload.
-  // Rationale: instant lock on Alt-Tab punishes legitimate multitasking, while
-  // an unattended visible vault is the actual unattended-device threat.
+  // Timers are a prompt lock; crypto-session enforces elapsed deadlines even
+  // when a browser suspends timers or restores a page from its back/forward cache.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let idle: ReturnType<typeof setTimeout> | null = null;
-    const onActivity = () => {
-      if (idle) clearTimeout(idle);
-      idle = setTimeout(lockVault, 15 * 60 * 1000);
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      const remaining = millisecondsUntilVaultLock();
+      timer = remaining === null ? null : setTimeout(() => {
+        enforceLockDeadline();
+        schedule();
+      }, remaining);
     };
-    onActivity();
+    const onActivity = () => {
+      noteVaultActivity();
+      schedule();
+    };
     window.addEventListener("pointerdown", onActivity);
     window.addEventListener("keydown", onActivity);
     const onVisibility = () => {
-      if (document.hidden) {
-        timer = setTimeout(lockVault, 5 * 60 * 1000);
-      } else if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      noteVaultVisibility(document.hidden);
+      schedule();
     };
+    const onReturn = () => { enforceLockDeadline(); schedule(); };
     const onUnload = () => lockVault();
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onReturn);
+    window.addEventListener("pageshow", onReturn);
     window.addEventListener("beforeunload", onUnload);
+    const unsubscribe = subscribe(schedule);
+    schedule();
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onReturn);
+      window.removeEventListener("pageshow", onReturn);
       window.removeEventListener("beforeunload", onUnload);
       if (timer) clearTimeout(timer);
-      if (idle) clearTimeout(idle);
+      unsubscribe();
       window.removeEventListener("pointerdown", onActivity);
       window.removeEventListener("keydown", onActivity);
     };

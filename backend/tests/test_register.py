@@ -163,14 +163,17 @@ class TestRegister:
         finally:
             db.close()
 
-    def test_duplicate_unverified_resends_single_active(self, client, captured_email):
+    def test_duplicate_unverified_obeys_cooldown_without_invalidating_link(
+        self, client, captured_email
+    ):
         from db import SessionLocal
         from models import EmailVerificationToken, User
 
         email = f"re-{uuid.uuid4().hex[:8]}@example.com"
         assert _register(client, email).status_code == 201
         assert _register(client, email).status_code == 201
-        assert len(captured_email) == 2
+        assert len(captured_email) == 1
+        raw = _raw_from(captured_email)
         db = SessionLocal()
         try:
             user = db.query(User).filter(User.email == email).first()
@@ -185,6 +188,7 @@ class TestRegister:
             assert len(rows) == 1
         finally:
             db.close()
+        assert client.post("/auth/verify-email", json={"token": raw}).status_code == 200
 
     def test_email_normalized_lowercase(self, client, captured_email):
         from db import SessionLocal

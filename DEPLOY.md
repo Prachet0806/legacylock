@@ -1,30 +1,32 @@
 # LegacyLock deployment contract
 
-Production activation is gated by [the implementation record](docs/remediation-implementation.md), [operations runbook](docs/remediation-operations.md) and [dependency exceptions](docs/dependency-exceptions.md). Local tests do not establish real email delivery, HTTPS cookie behavior, managed backup objectives, capacity or independent cryptographic review.
+Production activation is gated by [the implementation record](docs/remediation-implementation.md), [operations runbook](docs/remediation-operations.md) and [dependency exceptions](docs/dependency-exceptions.md). Local tests do not establish real email delivery, HTTPS cookie behavior, offsite backup objectives, capacity or independent cryptographic review.
 
 ## Topology and artifact
 
-Browser → HTTPS application origin → same-origin `/api/*` rewrite → FastAPI → PostgreSQL 17. A separate recovery worker owns checker passes and delivery attempts. Keep one API instance while rate limits use process-local buckets. Rolling replacement also needs edge enforcement if the limit must span old/new instances. Never trust arbitrary forwarded headers to improve client-IP attribution.
+Browser → Vercel HTTPS application origin → same-origin `/api/*` rewrite → Northflank FastAPI service → Supabase PostgreSQL. A second, private Northflank service runs `python worker.py` continuously for checker passes and delivery attempts. Keep one API instance while rate limits use process-local buckets. Rolling replacement also needs edge enforcement if the limit must span old/new instances. Never trust arbitrary forwarded headers to improve client-IP attribution.
 
-Build immutable frontend/backend images from the reviewed tree. Targets are Python 3.12.14 and Node 22.23.3; install locked dependencies. The frontend builder consumes `NEXT_PUBLIC_API_URL=/api` and `API_UPSTREAM=<backend origin>` and the runner serves `server.js` with `.next/static` colocated. Rewrite destinations are build inputs. On Vercel replace the example destination in `frontend/vercel.json`; keep `/api` and `Referrer-Policy: no-referrer`.
+Build the backend image from the reviewed tree and use a native Vercel build from `frontend/` with `npm ci` and `npm run build`. Targets are Python 3.12.14 and Node 22.23.3; install locked dependencies. Set `NEXT_PUBLIC_API_URL=/api` and `API_UPSTREAM=<Northflank production HTTPS API origin>` for production. For Vercel previews set `PREVIEW_API_UPSTREAM=<isolated HTTPS fixture API origin>` and `PRODUCTION_API_UPSTREAM=<production HTTPS API origin>`; the build rejects a missing or shared preview origin. The Next.js rewrite is the sole `/api` route. The frontend Docker image is a diagnostic artifact whose standalone `server.js` needs `.next/static` colocated.
 
-`render.yaml` contains an API web service, independent worker and managed PostgreSQL. Replace example domains, fill secret-store settings, mount JWT files in the dashboard and run `render blueprints validate render.yaml` against the intended Render account/CLI before creation. YAML parsing alone does not validate platform schema or secret mounts. Auto deployment is disabled for coordinated migration and sender cutover.
+`render.yaml` is a historical deployment example and is not used for this topology. Configure exactly one Northflank API service from `backend/Dockerfile`, one independent worker service from the same reviewed image, and a one-off migration job before deploying the worker. Gate automatic promotion of API and worker so schema and sender cutover stay coordinated. Qualify the actual accounts, quotas and host behavior before storing real user data. Supabase Free has no automatic daily backup or PITR; arrange and test encrypted offsite backups separately.
 
 ## Required configuration
 
 | Setting | Contract |
 |---|---|
 | `ENVIRONMENT` | `production` on API and worker |
-| `DATABASE_URL` | Intended PostgreSQL URL with platform-required TLS; backed up and isolated from test databases |
+| `DATABASE_URL` | Supabase session/direct PostgreSQL URL with certificate-verified TLS (`sslmode=verify-full`); use an endpoint compatible with the host's IP support, backed up and isolated from test databases |
 | `SESSION_SECRET` | Dedicated random value, at least 32 characters |
 | `AUTH_EPOCH` | Deployment-wide identifier, synchronized on API/worker; replace after restoration |
-| JWT files | Corresponding RSA private/public PEM pair, at least 2048 bits. API validates correspondence at startup. Render paths: `/etc/secrets/jwt_private.pem` and `/etc/secrets/jwt_public.pem`. Worker needs neither file |
+| JWT signing keys | Corresponding RSA private/public PEM pair, at least 2048 bits. API validates correspondence at startup. Supply readable files via `JWT_PRIVATE_KEY_PATH`/`JWT_PUBLIC_KEY_PATH`, or base64-encoded PEMs via secret-store `JWT_PRIVATE_KEY_B64`/`JWT_PUBLIC_KEY_B64` when mounted file permissions prevent non-root access. Worker needs neither key |
 | `DELIVERY_PAYLOAD_KEY` | Separate random 32-byte base64 AES-GCM key, backed up outside the database |
 | `DELIVERY_PAYLOAD_KEY_ID`, `DELIVERY_PAYLOAD_KEYS` | Current version and secret JSON ring of retained older versions; do not retire a version with live/retained payloads |
 | `ALLOWED_ORIGINS`, `FRONTEND_URL` | Exact application HTTPS origin; no wildcard or `null` |
 | `ALLOWED_HOSTS` | Actual API hostnames, including platform health/rewrite host |
 | `TRUSTED_PROXIES` | Verified direct-peer and forwarding-chain CIDRs only. Start Uvicorn with `--no-proxy-headers`; the application owns trust parsing |
 | `BACKGROUND_IN_API` | `false` with the separate worker |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT` | Bounded SQLAlchemy connections for the Supabase limit; defaults 3, 0, 10 seconds per process; verify total API plus worker connection usage |
+| `MAX_BENEFICIARIES_PER_VAULT`, `MAX_MESSAGES_PER_VAULT` | Admission limits, defaults 25 and 100; tune only after hosted capacity measurement |
 | `HEARTBEAT_ENABLED` | `true` for recovery checking |
 | `RELEASE_HOLD` | Initially `true` on both processes; release only after reconciliation and evidence review |
 | `DELIVERY_ENABLED` | `false` during restore quarantine; enable deliberate delivery after reconciliation |
@@ -53,4 +55,4 @@ Migrations 0006–0008 preserve encrypted bytes and reject destructive downgrade
 
 `/health` proves process liveness; `/readyz` proves database connectivity. Restricted `/operations/recovery` distinguishes stale/error checkpoints, release holds, overdue jobs, expired leases, dead letters, pending-release lag and recent provider attempt outcomes. Recovery degradation must alert without taking owner check-in routes offline. Configure monitor authorization privately and verify an actual alert recipient; configuration documents are not evidence that alerts are wired.
 
-The CI workflow runs SQLite/PostgreSQL suites, production browser journeys, dependency/quality gates and image asset checks. Qualify actual built images, Render Blueprint, secret mounts, HTTPS `/api` routing, real providers, recovery alerts, managed restore and an independent cryptographic review before production activation. Load-test the expected inventory to establish capacity and measured processing budget. Proposed RPO 15 minutes/RTO four hours remain targets until a managed restore demonstrates them.
+The CI workflow runs SQLite/PostgreSQL suites, production browser journeys, dependency/quality gates and image asset checks. Qualify the Northflank services, secret access, Vercel HTTPS `/api` routing, Supabase session behavior, real providers, recovery alerts, offsite restore and an independent cryptographic review before production activation. Load-test the expected inventory to establish capacity and measured processing budget. Proposed RPO 15 minutes/RTO four hours remain targets until a timed offsite restore demonstrates them.

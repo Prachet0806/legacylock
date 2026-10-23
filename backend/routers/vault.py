@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from config import get_settings
 from deps import get_db, require_owner
 from models import MessageCategory, User, Vault, VaultMessage
 from services.audit import record_audit
@@ -241,6 +242,9 @@ def save_message(
     writable(db, vault, data.material_revision)
     if not vault.wrapped_vmk:
         raise HTTPException(409, "Finalize vault setup before saving messages")
+    count = db.query(VaultMessage.id).filter(VaultMessage.vault_id == vault.id).count()
+    if count >= get_settings().max_messages_per_vault:
+        raise HTTPException(409, "Vault message limit reached")
     validate_message(data.ciphertext, data.wrapped_mek, data.crypto_metadata)
 
     metadata_dict = dict(data.crypto_metadata) if data.crypto_metadata else {}

@@ -53,7 +53,7 @@ def _beneficiary_of(client, owner_headers, name="Ben", email=None):
         "invitation_link"
     ]
     raw = link.split("token=", 1)[-1]
-    accepted = client.post(f"/access/invite/{raw}/accept")
+    accepted = client.post("/access/invitation/accept", json={"token": raw})
     assert accepted.status_code == 200
     ben_db_id = accepted.json()["beneficiary_id"]
     db = SessionLocal()

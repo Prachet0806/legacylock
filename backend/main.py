@@ -34,11 +34,19 @@ from services.heartbeat_checker import check_heartbeat
 from services.operations import checkpoint
 
 settings = get_settings()
+settings.validate_production()
 
 setup_logging()
 logger = logging.getLogger("legacylock")
 
 HEARTBEAT_CHECK_INTERVAL = int(os.environ.get("HEARTBEAT_CHECK_INTERVAL", "60"))
+
+
+async def _record_failure(component: str, exc: Exception) -> None:
+    try:
+        await asyncio.to_thread(checkpoint, SessionLocal, component, type(exc).__name__)
+    except Exception:
+        logger.exception("Could not persist %s failure checkpoint", component)
 
 
 def _parse_origins(raw: str) -> list[str]:
@@ -73,7 +81,7 @@ async def _heartbeat_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await asyncio.to_thread(checkpoint, SessionLocal, "checker", type(exc).__name__)
+            await _record_failure("checker", exc)
             logger.exception("Heartbeat check failed")
 
 
@@ -87,7 +95,7 @@ async def _delivery_loop():
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await asyncio.to_thread(checkpoint, SessionLocal, "delivery", type(exc).__name__)
+            await _record_failure("delivery", exc)
             logger.exception("Delivery worker pass failed")
         await asyncio.sleep(5)
 
@@ -123,17 +131,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # In test env init_db creates tables; in prod Alembic owns schema.
     if settings.environment != "production" and not settings.migrated_schema_only:
         init_db()
-    task = asyncio.create_task(_heartbeat_loop())
+    task = asyncio.create_task(_heartbeat_loop()) if settings.background_in_api else None
     delivery_task = (
         asyncio.create_task(_delivery_loop())
         if settings.environment != "test" and settings.background_in_api
         else None
     )
     yield
-    task.cancel()
+    if task:
+        task.cancel()
     if delivery_task:
         delivery_task.cancel()
-    await asyncio.gather(task, *([delivery_task] if delivery_task else []), return_exceptions=True)
+    await asyncio.gather(
+        *([task] if task else []),
+        *([delivery_task] if delivery_task else []),
+        return_exceptions=True,
+    )
 
 
 app = FastAPI(title="LegacyLock API", lifespan=lifespan)

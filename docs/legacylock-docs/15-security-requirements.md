@@ -101,10 +101,35 @@ The unwrapped VMK may exist only in client memory during an active unlocked vaul
 
 Phase 4 MUST establish a baseline Content Security Policy and secure browser configuration appropriate to protecting in-memory cryptographic material.
 
-## INV-23 — Metadata-Only Coverage Intelligence
+## INV-29 — Metadata-Only Coverage Intelligence
 
 The Coverage Intelligence Engine MUST operate exclusively on non-sensitive vault metadata, including `MessageCategory`, controlled coverage tags, labels, beneficiary configuration, and user-declared applicability. It MUST NOT access plaintext, ciphertext, VMK, MEK, vault passphrase, KEK, Shamir shares, or other cryptographic material.
 
-## INV-24 — Deterministic Coverage Authority
+## INV-30 — Deterministic Coverage Authority
 
 Coverage status and Legacy Readiness scores MUST be produced by deterministic rules. Any future AI MAY explain, summarize, or prioritize these results but MUST NOT be authoritative for coverage, security, authorization, or vault state.
+
+### INV-25 — Single-Writer Recovery Ceremony
+
+Recovery policy (k/n/generation) changes only through draft ceremony finalization at an expected material revision. PUT /vault/crypto-material rewraps initialized material only and rejects policy fields. Every generation mutation uses a fresh ceremony; reuse returns 409. Initial material and policy finalize together.
+
+### INV-26 — Beneficiary Session Revocation
+
+Owner and beneficiary JWTs carry a server-side independently revocable AuthSession family ID and deployment auth epoch. Contact replacement/deletion revokes beneficiary families/challenges and clears acceptance. Logout revokes the calling family immediately. Refresh credentials rotate once; deliberate replay revokes that family, while healthy concurrency does not mass-revoke other devices. Only accepted current contacts authenticate.
+
+### INV-27 — Durable Notification Delivery
+
+Security-critical mutations commit one business event and unique recipient/channel delivery intent. Leased jobs move READY/RETRY_WAIT → CLAIMED → ACCEPTED, RETRY_WAIT or DEAD; obsolete work is CANCELLED. Claims and actual provider-call timestamps are separate evidence. Provider acceptance is not inbox delivery. Protected credential payloads expire and are erased; raw links never enter logs.
+
+### INV-28 — Correlated Audit Trail
+
+Security-sensitive audit events carry request_id + IP for HTTP↔audit↔log traceability. Test/verification endpoints exist in the test environment only.
+
+## Threat Model (Phase B baseline)
+
+- **Server/DB compromise:** stored content is ciphertext and wrapped keys, with server-visible account, label, category, assignment and timing metadata. JWT key theft can forge sessions but alone does not decrypt vault content. A compromised server able to deliver modified application JavaScript can attack an unlocking browser.
+- **Frontend/XSS compromise:** full vault compromise is possible while the browser holds secrets. Dynamic nonce CSP, redaction, epoch-bound key lifetime and dependency controls reduce exposure; they do not make compromised code safe.
+- **Beneficiary compromise:** ciphertext fetch requires TRIGGERED + accepted status + valid session; shares reconstruct only client-side with exact-k + generation binding.
+- **Token theft:** short-lived access is family/epoch revocable; refresh is hash-stored and single-use for both roles. Fresh beneficiary identity relies on mailbox control, independently of separately held shares.
+- **Notification provider compromise:** recipients, notification metadata and authentication links are exposed to the provider; encrypted vault content, passphrases and recovery shares are not sent in notices.
+- **Two secrets:** the login password authenticates; the vault passphrase decrypts. Password reset (if ever added) must not imply vault recovery.

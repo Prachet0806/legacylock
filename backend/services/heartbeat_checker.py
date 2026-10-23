@@ -1,5 +1,6 @@
 """Bounded heartbeat evaluation; network delivery belongs to the outbox worker."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Interval, String, cast, func
@@ -9,6 +10,8 @@ from models import HeartbeatConfig, VaultStatus
 from services.audit import record_audit
 from services.outbox import utc
 from services.trigger_service import lock_status, release_locked, stage_warning
+
+logger = logging.getLogger("legacylock.checker")
 
 
 def check_heartbeat(db, now=None, limit=100, vault_id=None):
@@ -37,6 +40,7 @@ def check_heartbeat(db, now=None, limit=100, vault_id=None):
         query = query.filter(VaultStatus.vault_id == vault_id)
     ids = query.order_by(VaultStatus.updated_at, VaultStatus.vault_id).limit(min(limit, 1000)).all()
     actions = []
+    failed = 0
     for (ident,) in ids:
         try:
             vs = lock_status(db, ident)
@@ -60,7 +64,10 @@ def check_heartbeat(db, now=None, limit=100, vault_id=None):
             db.commit()
         except Exception:
             db.rollback()
-            raise
+            logger.exception("Heartbeat evaluation failed for vault %s", ident)
+            failed += 1
+    if failed:
+        raise RuntimeError(f"Heartbeat evaluation failed for {failed} vault(s)")
     return actions
 
 

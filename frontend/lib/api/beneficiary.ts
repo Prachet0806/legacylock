@@ -7,7 +7,7 @@ export const acceptInvite = (hash: string) => {
 };
 export const getInviteStatus = (hash: string) =>
   publicFetch<{ invitation_status: string; is_expired: boolean }>(
-    `/access/invite/${hash}/status`,
+    "/access/invitation/status", {method:"POST",body:JSON.stringify({token:hash})},
   );
 export const getAccessStatus = () =>
   beneficiaryFetch<{

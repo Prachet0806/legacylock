@@ -137,7 +137,6 @@ class ShareAssignmentOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@public_router.post("/invite/{invitation_hash}/accept", response_model=InvitationAcceptOut)
 def accept_invitation(invitation_hash: str, response: Response, db: Session = Depends(get_db)):
     """Beneficiary accepts invitation via email link (one-time, rotates hash)."""
     beneficiary = _find_by_invite(db, invitation_hash)
@@ -234,10 +233,10 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
     )
 
 
-@public_router.get("/invite/{invitation_hash}/status")
-def check_invitation_status(invitation_hash: str, db: Session = Depends(get_db)):
+@public_router.post("/invitation/status")
+def check_invitation_status(data: InvitationCredential, db: Session = Depends(get_db)):
     """Check invitation status without accepting (minimal disclosure)."""
-    beneficiary = _find_by_invite(db, invitation_hash)
+    beneficiary = _find_by_invite(db, data.token)
 
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Invalid invitation")

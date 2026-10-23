@@ -125,6 +125,9 @@ def add_beneficiary(
     )
     if existing:
         raise HTTPException(status_code=409, detail="Beneficiary with this email already exists")
+    count = db.query(Beneficiary.id).filter(Beneficiary.vault_id == vault.id).count()
+    if count >= get_settings().max_beneficiaries_per_vault:
+        raise HTTPException(status_code=409, detail="Vault beneficiary limit reached")
     if data.share_index is not None:
         _check_share_in_range(vault, data.share_index)
     entry = Beneficiary(
@@ -225,7 +228,10 @@ def invite_beneficiary(
         f"beneficiary:{beneficiary.id}",
         beneficiary.email,
         "LegacyLock - Beneficiary invitation",
-        f"Accept your invitation (expires in 7 days):\n{invitation_link}\nStore your recovery shares separately.",
+        f"Accept your invitation (expires in 7 days):\n{invitation_link}\n"
+        f"Recipient ID: {beneficiary.id}. Keep this ID for future sign-in "
+        "if you have several vaults.\n"
+        "Store your recovery shares separately.",
         beneficiary=beneficiary,
         expires=datetime.now(UTC) + timedelta(days=7),
     )

@@ -27,6 +27,10 @@ let vmk: Uint8Array | null = null;
 let epoch = 0;
 let binding: string | null = null;
 let revision = 0;
+const HIDDEN_LOCK_MS = 5 * 60 * 1000;
+const IDLE_LOCK_MS = 15 * 60 * 1000;
+let hiddenAt: number | null = null;
+let lastActivityAt: number | null = null;
 export const currentEpoch = () => epoch;
 export const materialRevision = () => revision;
 export function bindVault(identity: string, material: number): void {
@@ -36,6 +40,7 @@ export function bindVault(identity: string, material: number): void {
   revision = material;
 }
 export function assertEpoch(value: number): void {
+  enforceLockDeadline();
   if (epoch !== value) throw new Error("Session changed; unlock again");
 }
 export function recover(shares: string[], threshold: number, generation?: string): void {
@@ -48,6 +53,7 @@ function notify() {
 }
 
 export function isUnlocked(): boolean {
+  enforceLockDeadline();
   return vmk !== null;
 }
 
@@ -63,10 +69,38 @@ export function lockVault(): void {
   activeGeneration = null;
   if (vmk) zeroMemory(vmk);
   vmk = null;
+  hiddenAt = null;
+  lastActivityAt = null;
   notify();
 }
 
+export function enforceLockDeadline(now: number = Date.now()): void {
+  if (vmk && ((hiddenAt !== null && now - hiddenAt >= HIDDEN_LOCK_MS)
+      || (lastActivityAt !== null && now - lastActivityAt >= IDLE_LOCK_MS))) {
+    lockVault();
+  }
+}
+
+export function noteVaultActivity(): void {
+  enforceLockDeadline();
+  if (vmk && (typeof document === "undefined" || !document.hidden)) lastActivityAt = Date.now();
+}
+
+export function noteVaultVisibility(hidden: boolean): void {
+  enforceLockDeadline();
+  if (vmk) hiddenAt = hidden ? (hiddenAt ?? Date.now()) : null;
+}
+
+export function millisecondsUntilVaultLock(): number | null {
+  enforceLockDeadline();
+  if (!vmk || lastActivityAt === null) return null;
+  const deadlines = [lastActivityAt + IDLE_LOCK_MS];
+  if (hiddenAt !== null) deadlines.push(hiddenAt + HIDDEN_LOCK_MS);
+  return Math.max(0, Math.min(...deadlines) - Date.now());
+}
+
 function requireKey(): Uint8Array {
+  enforceLockDeadline();
   if (!vmk) throw new Error("Vault is locked");
   return vmk;
 }
@@ -75,6 +109,8 @@ function adopt(raw: Uint8Array): void {
   if (vmk) zeroMemory(vmk);
   vmk = new Uint8Array(raw);
   zeroMemory(raw);
+  lastActivityAt = Date.now();
+  hiddenAt = typeof document !== "undefined" && document.hidden ? Date.now() : null;
   notify();
 }
 

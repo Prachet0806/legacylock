@@ -28,7 +28,7 @@ def _beneficiary_headers(client, auth):
 
     client.cookies.clear()
     raw = _invite_link(client, auth)
-    r = client.post(f"/access/invite/{raw}/accept")
+    r = client.post("/access/invitation/accept", json={"token": raw})
     assert r.status_code == 200
     assert "access_token" not in r.json()
     ben_id = r.json()["beneficiary_id"]
@@ -70,22 +70,22 @@ class TestInviteFlow:
     def test_accept_and_replay(self, client, auth):
         client.cookies.clear()
         raw = _invite_link(client, auth)
-        assert client.get(f"/access/invite/{raw}/status").status_code == 200
-        r = client.post(f"/access/invite/{raw}/accept")
+        assert client.post("/access/invitation/status", json={"token": raw}).status_code == 200
+        r = client.post("/access/invitation/accept", json={"token": raw})
         assert r.status_code == 200
         assert "access_token" not in r.json()
         # HttpOnly session + refresh cookies set, nothing in the body
         assert "legacylock_beneficiary_session" in client.cookies
         assert "legacylock_beneficiary_refresh" in client.cookies
         # rotated: replay same link is now invalid
-        r2 = client.post(f"/access/invite/{raw}/accept")
+        r2 = client.post("/access/invitation/accept", json={"token": raw})
         assert r2.status_code in (404, 409)
         client.cookies.clear()
 
     def test_session_refresh_flow(self, client, auth):
         client.cookies.clear()
         raw = _invite_link(client, auth)
-        client.post(f"/access/invite/{raw}/accept")
+        client.post("/access/invitation/accept", json={"token": raw})
         old_refresh = client.cookies.get("legacylock_beneficiary_refresh")
         assert old_refresh
         # No JWT needed: the refresh cookie alone renews the session
