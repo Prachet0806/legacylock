@@ -2,7 +2,7 @@
 
 LegacyLock encrypts secret messages in the browser and permits enrolled beneficiaries to fetch ciphertext after an owner-authorized or heartbeat release. Recovery requires separately held Shamir shares. Login passwords reach the authentication service; vault passphrases, plaintext, unwrapped vault/message keys and recovery shares do not reach application APIs. Labels, categories, email addresses, assignments and timing remain server-visible metadata. A malicious delivery of application JavaScript is outside the protection offered by encrypted database storage.
 
-Implementation status and remaining release gates are recorded in [the remediation implementation record](docs/remediation-implementation.md). The prior README and deployment guide are preserved in `docs/archive/` as historical material; current commands and contracts are below and in [DEPLOY.md](DEPLOY.md).
+Current behavior and development commands are below. Hosting, cutover, and remaining release gates are in [DEPLOY.md](DEPLOY.md).
 
 ## Current behavior
 
@@ -16,7 +16,7 @@ Implementation status and remaining release gates are recorded in [the remediati
 
 ## Runtime and development
 
-Declared build targets: Python 3.12.14, Node 22.23.3, Next 15.5.27, React 18.3.1 and PostgreSQL 17. Backend dependencies use `requirements.lock.txt` as the constraints source; frontend installs use `package-lock.json`. Check [dependency exceptions](docs/dependency-exceptions.md) before release.
+Declared build targets: Python 3.12.14, Node 22.23.3, Next 15.5.28, React 18.3.1 and PostgreSQL 17. Backend dependencies use `requirements.lock.txt` as the constraints source; frontend installs use `package-lock.json`. Run dependency audits before release.
 
 Copy `.env.example` into your local environment and configure a development database and JWT pair. Backend settings load `../.env` when run from `backend/`. Generate development keys only; never reuse them in production:
 
@@ -78,4 +78,4 @@ npm run test:e2e
 
 Do not set the direct test-helper API URL to `/api`: test request contexts default to `http://localhost:8000`; the browser bundle independently uses `/api`. Stateful journeys create unique owners. Test mailbox/time-travel routes exist only in test mode and must never be deployed as production mode substitutes.
 
-Sanitized inventory is `python ops.py`. Encrypted local restoration, held recovery and cutover procedures are described in [the operations runbook](docs/remediation-operations.md). The design and API contracts are in [remediation contracts](docs/remediation-contracts.md).
+Sanitized inventory is `python ops.py`. Deployment and cutover requirements are in [DEPLOY.md](DEPLOY.md); the original design and API specifications are in [the numbered documentation](docs/legacylock-docs/00-overview.md).

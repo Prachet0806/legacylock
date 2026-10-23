@@ -1,6 +1,6 @@
 # LegacyLock deployment contract
 
-Production activation is gated by [the implementation record](docs/remediation-implementation.md), [operations runbook](docs/remediation-operations.md) and [dependency exceptions](docs/dependency-exceptions.md). Local tests do not establish real email delivery, HTTPS cookie behavior, offsite backup objectives, capacity or independent cryptographic review.
+Production activation requires the checks below and current dependency audits. Local tests do not establish real email delivery, HTTPS cookie behavior, offsite backup objectives, capacity or independent cryptographic review.
 
 ## Topology and artifact
 

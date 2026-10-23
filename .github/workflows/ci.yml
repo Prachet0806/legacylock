@@ -144,7 +144,7 @@ jobs:
         env:
           RESTORE_FIXTURE_PASSPHRASE: E2E-Vault-Passphrase-12345
         run: |
-          python restore_rehearsal.py --target legacylock_restore_ci --pg-image postgres:17-alpine --report ../docs/restore-rehearsal-evidence.json --fixture-output ../.restore-rehearsal/server.json
+          python restore_rehearsal.py --target legacylock_restore_ci --pg-image postgres:17-alpine --report ../.restore-rehearsal/restore-rehearsal-evidence.json --fixture-output ../.restore-rehearsal/server.json
           kill "$(cat /tmp/legacylock-api.pid)"
           export DATABASE_URL=postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_restore_ci
           export AUTH_EPOCH=$(python -c 'import json; print(json.load(open("../.restore-rehearsal/server.json"))["auth_epoch"])')
@@ -169,7 +169,7 @@ jobs:
           name: browser-evidence
           path: |
             frontend/test-results/
-            docs/restore-rehearsal-evidence.json
+            .restore-rehearsal/restore-rehearsal-evidence.json
           retention-days: 7
   images:
     runs-on: ubuntu-latest
