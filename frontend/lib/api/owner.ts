@@ -1,7 +1,6 @@
 // Owner-session API wrappers — mirrors backend owner routers.
 import { ownerFetch, publicFetch, sessionChanged } from "./transport";
 
-// --- auth ---
 export interface MeOut {
   id: number;
   email: string;
@@ -14,7 +13,6 @@ export const logout = async () => {
   finally { sessionChanged(); }
 };
 
-// --- vault messages ---
 export interface MessageMeta {
   id: number;
   label: string;
@@ -56,7 +54,6 @@ export const createMessage = (body: {
 export const deleteMessage = (id: number) =>
   ownerFetch<void>(`/vault/messages/${id}`, { method: "DELETE" });
 
-// --- crypto material (wrapped only) ---
 export interface CryptoMaterial {
   material_revision: number;
   wrapped_vmk: string | null;
@@ -75,7 +72,6 @@ export const putCryptoMaterial = (body: {
   vmk_kdf_parameters: { iterations: number };
 }) => ownerFetch<{ message: string }>("/vault/crypto-material", { method: "PUT", body: JSON.stringify(body) });
 
-// --- recovery policy + ceremony (per-vault Shamir k-of-n) ---
 export interface RecoveryPolicy {
   ceremony_id?: number;
   material_revision?: number;
@@ -106,7 +102,6 @@ export const postRecoveryCeremony = (body: {
 export const finalizeCeremony = (id: number, stored_indexes: number[]) => ownerFetch<{material_revision: number}>(`/vault/recovery-ceremony/${id}/finalize`, {method:"POST", body:JSON.stringify({stored_indexes})});
 export const cancelCeremony = (id: number) => ownerFetch<{message: string}>(`/vault/recovery-ceremony/${id}`, {method:"DELETE"});
 
-// --- vault status / trigger ---
 export interface VaultStatus {
   status: string;
   grace_started_at: string | null;
@@ -124,7 +119,6 @@ export const manualTrigger = (password: string, confirm: true) =>
     body: JSON.stringify({ password, confirm }),
   });
 
-// --- beneficiaries ---
 export interface Beneficiary {
   id: number;
   name: string;
@@ -152,9 +146,6 @@ export const assignShare = (beneficiaryId: number, share_index: number) =>
     { method: "POST", body: JSON.stringify({ share_index }) },
   );
 
-// --- heartbeat ---
-// NOTE: the API has no next_deadline field; compute it client-side as
-// last_check_in + interval_days. PUT returns {message}, not the config.
 export interface HeartbeatConfig {
   interval_days: number;
   grace_days: number;
@@ -179,7 +170,6 @@ export function nextDeadline(cfg: HeartbeatConfig | null): string | null {
   return new Date(ms).toISOString();
 }
 
-// --- stats ---
 export interface Stats {
   message_count: number;
   beneficiary_count: number;

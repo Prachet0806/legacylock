@@ -206,7 +206,10 @@ jobs:
           openssl rsa -in image-keys/jwt_private.pem -pubout -out image-keys/jwt_public.pem
           chmod 644 image-keys/*.pem # throwaway CI keys readable by the container's unprivileged user
           PAYLOAD_KEY=$(openssl rand -base64 32)
-          docker run -d --name backend --network qualification --mount type=bind,source="$PWD/image-keys",target=/run/secrets,readonly -e ENVIRONMENT=production -e DATABASE_URL=postgresql+psycopg://legacylock:ci-only@postgres:5432/legacylock -e SESSION_SECRET=ci-image-isolated-configuration-0000000000 -e AUTH_EPOCH=ci-image-isolated -e JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private.pem -e JWT_PUBLIC_KEY_PATH=/run/secrets/jwt_public.pem -e DELIVERY_PAYLOAD_KEY="$PAYLOAD_KEY" -e RESEND_API_KEY=ci-never-send -e DELIVERY_ENABLED=false -e RELEASE_HOLD=true -e BACKGROUND_IN_API=false -e ALLOWED_HOSTS=backend,localhost,127.0.0.1 legacylock-backend:ci
+          # This disposable PostgreSQL fixture has TLS disabled. Keep production's
+          # certificate-verified TLS contract intact and smoke-test the image in
+          # test mode while explicitly selecting PostgreSQL instead of SQLite.
+          docker run -d --name backend --network qualification --mount type=bind,source="$PWD/image-keys",target=/run/secrets,readonly -e ENVIRONMENT=test -e USE_POSTGRES=1 -e DATABASE_URL=postgresql+psycopg://legacylock:ci-only@postgres:5432/legacylock -e SESSION_SECRET=ci-image-isolated-configuration-0000000000 -e JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private.pem -e JWT_PUBLIC_KEY_PATH=/run/secrets/jwt_public.pem -e DELIVERY_PAYLOAD_KEY="$PAYLOAD_KEY" -e RESEND_API_KEY=ci-never-send -e DELIVERY_ENABLED=false -e RELEASE_HOLD=true -e BACKGROUND_IN_API=false -e ALLOWED_HOSTS=backend,localhost,127.0.0.1 legacylock-backend:ci
           docker run -d --name frontend --network qualification -p 3000:3000 legacylock-frontend:ci
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:3000/ > /tmp/index.html; then break; fi

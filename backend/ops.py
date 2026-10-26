@@ -35,7 +35,8 @@ from services.trigger_service import lock_status
 def inventory(db):
     schema_revision = (
         db.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
-        if inspect(db.bind).has_table("alembic_version") else None
+        if inspect(db.bind).has_table("alembic_version")
+        else None
     )
     digest = hashlib.sha256()
     anomalies = {

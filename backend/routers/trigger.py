@@ -22,11 +22,6 @@ router = APIRouter(
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _get_vault(db: Session, current_user: User) -> Vault:
     """Get vault scoped to current user."""
     vault = (
@@ -53,11 +48,6 @@ def _get_or_create_vault_status(db: Session, vault_id: int) -> VaultStatus:
             return vs
         db.refresh(vs)
     return vs
-
-
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
 
 
 class VaultStatusOut(BaseModel):
@@ -93,11 +83,6 @@ class ResetStatusRequest(BaseModel):
         description="Owner's login password for re-authentication",
     )
     confirm: Literal[True]
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
 
 @router.get("/status", response_model=VaultStatusOut)

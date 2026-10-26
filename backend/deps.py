@@ -8,10 +8,6 @@ from db import get_db
 from models import Beneficiary, User
 from services.auth import decode_access_token
 
-# ---------------------------------------------------------------------------
-# Database session
-# ---------------------------------------------------------------------------
-# Re-export get_db from db.py
 __all__ = [
     "get_db",
     "get_current_user",
@@ -19,11 +15,6 @@ __all__ = [
     "require_owner",
     "require_beneficiary",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Authentication - JWT from Authorization header or cookie
-# ---------------------------------------------------------------------------
 
 
 def _get_token_from_request(request: Request) -> str | None:

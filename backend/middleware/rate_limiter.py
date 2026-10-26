@@ -110,12 +110,10 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         key_min = f"{client_ip}:{bucket_prefix}"
         now = time.time()
 
-        # Clean up old entries
         self._cleanup_old_entries(self.minute_buckets[key_min], 60)
         self._cleanup_old_entries(self.hour_buckets[key_min], 3600)
         self._evict_if_needed()
 
-        # Check minute limit
         if len(self.minute_buckets[key_min]) >= per_min:
             return JSONResponse(
                 status_code=429,
@@ -123,7 +121,6 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": "60"},
             )
 
-        # Check hour limit
         if len(self.hour_buckets[key_min]) >= per_hour:
             return JSONResponse(
                 status_code=429,

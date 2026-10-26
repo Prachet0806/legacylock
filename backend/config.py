@@ -94,9 +94,16 @@ class Settings(BaseSettings):
         if self.environment != "production":
             return
         required = {
-            "release_hold", "delivery_enabled", "auth_epoch", "background_in_api",
-            "frontend_url", "allowed_origins", "allowed_hosts", "heartbeat_enabled",
-            "sms_enabled", "notification_email_from",
+            "release_hold",
+            "delivery_enabled",
+            "auth_epoch",
+            "background_in_api",
+            "frontend_url",
+            "allowed_origins",
+            "allowed_hosts",
+            "heartbeat_enabled",
+            "sms_enabled",
+            "notification_email_from",
         }
         missing = required - self.model_fields_set
         if missing:
@@ -116,8 +123,7 @@ class Settings(BaseSettings):
         if not _is_https_origin(self.frontend_url):
             raise RuntimeError("Production FRONTEND_URL must be the exact HTTPS application origin")
         origins = [
-            value.strip().rstrip("/")
-            for value in self.allowed_origins.split(",") if value.strip()
+            value.strip().rstrip("/") for value in self.allowed_origins.split(",") if value.strip()
         ]
         if origins != [self.frontend_origin()] or not _is_https_origin(origins[0]):
             raise RuntimeError("Production ALLOWED_ORIGINS must equal the HTTPS frontend origin")

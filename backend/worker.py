@@ -34,7 +34,7 @@ def main():
         except Exception as exc:
             _record_failure("delivery", exc)
             delivery_failures = min(delivery_failures + 1, 4)
-        time.sleep(min(5 * (2 ** delivery_failures), 60))
+        time.sleep(min(5 * (2**delivery_failures), 60))
 
 
 def _record_failure(component: str, exc: Exception) -> None:

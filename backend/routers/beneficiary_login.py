@@ -36,9 +36,7 @@ class RedeemRequest(BaseModel):
 def request_link(data: LoginRequest, db=Depends(get_db)):
     now = datetime.now(UTC)
     email = str(data.email).strip().lower()
-    query = db.query(Beneficiary).filter_by(
-        email=email, invitation_status="accepted"
-    )
+    query = db.query(Beneficiary).filter_by(email=email, invitation_status="accepted")
     if data.beneficiary_id is not None:
         query = query.filter_by(id=data.beneficiary_id)
     # One durable email-level cooldown prevents a request for an address with
@@ -67,11 +65,7 @@ def request_link(data: LoginRequest, db=Depends(get_db)):
             .with_for_update()
             .first()
         )
-        if (
-            not ben
-            or ben.invitation_status != "accepted"
-            or ben.email != email
-        ):
+        if not ben or ben.invitation_status != "accepted" or ben.email != email:
             continue
         latest = (
             db.query(AuthChallenge)

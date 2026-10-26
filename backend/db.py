@@ -22,10 +22,6 @@ def normalize_database_url(url: str) -> str:
     return url
 
 
-# In test environment, use SQLite. SQLITE_FILE (a filesystem path) selects a
-# file-backed DB so a live uvicorn server and out-of-process seed scripts can
-# share state (used by the Playwright golden-path E2E). Without it, an
-# in-memory DB shared across connections via StaticPool is used (pytest).
 if settings.environment == "test" and os.environ.get("USE_POSTGRES") != "1":
     _sqlite_file = os.environ.get("SQLITE_FILE")
     if _sqlite_file:
@@ -48,7 +44,8 @@ else:
 
         parsed = make_url(database_url)
         if parsed.drivername != "postgresql+psycopg" or parsed.query.get("sslmode") not in (
-            None, "verify-full"
+            None,
+            "verify-full",
         ):
             raise RuntimeError(
                 "Production DATABASE_URL must use PostgreSQL and certificate-verified TLS"

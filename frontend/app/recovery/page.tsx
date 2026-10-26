@@ -7,7 +7,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, ArrowRight, CheckCircle2, FileText, Info, Lock, ShieldCheck, Ticket, Unlock, Vault as VaultIcon } from "lucide-react";
-import { clsx } from "clsx";
 import { assertEpoch, bindVault, currentEpoch, decrypt, isUnlocked, lockVault, recover, subscribe } from "../../lib/crypto-session";
 import { parseShare } from "../../lib/shamir";
 import {

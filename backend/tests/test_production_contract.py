@@ -87,7 +87,8 @@ def test_worker_checkpoint_failure_does_not_mask_original_error(
 
 
 def test_migration_accepts_percent_in_sqlite_path(
-    tmp_path: Path, monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     from alembic.config import Config
 

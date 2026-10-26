@@ -50,9 +50,6 @@ export {
 } from "./api/beneficiary";
 export type { MeOut } from "./api/owner";
 
-// --- categories (plumbing only; advisor UI deferred) ---
-// Mirrors backend models/message.py MessageCategory — keep in sync
-// (covered by backend test_message_category_contract).
 export const MESSAGE_CATEGORIES = [
   "financial",
   "insurance",

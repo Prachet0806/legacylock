@@ -1,7 +1,6 @@
 "use client";
 
 // Vault message CRUD — encrypts locally before POST, decrypts locally after GET.
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
@@ -14,7 +13,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { assertEpoch, bindVault, currentEpoch, materialRevision, CRYPTO_VERSION, decrypt as decryptWithSession, encrypt as encryptWithSession, unlockVault } from "../../lib/crypto-session";
+import { assertEpoch, bindVault, currentEpoch, materialRevision, decrypt as decryptWithSession, encrypt as encryptWithSession, unlockVault } from "../../lib/crypto-session";
 import {
   createMessage,
   deleteMessage,
@@ -38,7 +37,7 @@ function categoryLabel(c: string): string {
 
 function SecretViewer({ label, text, onClose }: { label: string; text: string; onClose: () => void }) {
   const [revealed, setRevealed] = useState(false);
-  const [locked, setLocked] = useState(false);
+  const [locked, _setLocked] = useState(false);
   if (locked) {
     return (
       <Modal title={label} onClose={onClose}>
