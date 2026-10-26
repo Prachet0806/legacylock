@@ -63,7 +63,9 @@ def release_locked(db, vs, reason, now, actor_type="system", actor_id=0):
             f"beneficiary:{ben.id}",
             ben.email,
             "LegacyLock — Vault Access Released",
-            f"Vault access is now released. Sign in at {get_settings().frontend_origin()}/access/login and use the recovery shares already distributed to you. LegacyLock does not send or store shares.",
+            f"Vault access is now released. Sign in at "
+            f"{get_settings().frontend_origin()}/access/login and use the recovery shares "
+            "already distributed to you. LegacyLock does not send or store shares.",
             beneficiary=ben,
         )
         if get_settings().sms_enabled and ben.phone:
@@ -73,7 +75,8 @@ def release_locked(db, vs, reason, now, actor_type="system", actor_id=0):
                 f"beneficiary:{ben.id}",
                 ben.phone,
                 "",
-                "LegacyLock vault access is released. Sign in using your email; use your separately stored shares.",
+                "LegacyLock vault access is released. Sign in using your email; use your "
+                "separately stored shares.",
                 beneficiary=ben,
                 channel="sms",
             )
@@ -136,7 +139,11 @@ def stage_warning(db, vs, cfg, now):
         ):
             continue
         business = event(db, vs.vault_id, kind, vs.episode)
-        text = f"Check-in is overdue. The release deadline is {end.isoformat()}. The owner can cancel release by checking in before that deadline. Shares remain where you stored them."
+        text = (
+            f"Check-in is overdue. The release deadline is {end.isoformat()}. "
+            "The owner can cancel release by checking in before that deadline. "
+            "Shares remain where you stored them."
+        )
         enqueue(
             db, business, f"owner:{owner.id}", owner.email, "LegacyLock — Check-in overdue", text
         )

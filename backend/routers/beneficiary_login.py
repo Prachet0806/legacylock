@@ -96,7 +96,9 @@ def request_link(data: LoginRequest, db=Depends(get_db)):
             f"beneficiary:{ben.id}",
             ben.email,
             "LegacyLock — Beneficiary sign-in",
-            f"Sign in using this single-use link (expires in 15 minutes):\n{link}\nYou will still need your separately stored recovery shares to decrypt a released vault.",
+            f"Sign in using this single-use link (expires in 15 minutes):\n{link}\n"
+            "You will still need your separately stored recovery shares to "
+            "decrypt a released vault.",
             beneficiary=ben,
             expires=expires,
         )

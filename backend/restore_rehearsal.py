@@ -51,7 +51,8 @@ def main():
         or args.target == source.database
     ):
         parser.error(
-            "Requires a loopback PostgreSQL test source, new legacylock_restore_* target and synthetic fixture passphrase"
+            "Requires a loopback PostgreSQL test source, new legacylock_restore_* target, "
+            "and synthetic fixture passphrase"
         )
     began = time.monotonic()
     source_engine = create_engine(source)
@@ -191,7 +192,10 @@ def main():
         "release_hold": True,
         "delivery_enabled": False,
         "elapsed_seconds": round(time.monotonic() - began, 2),
-        "limits": "Synthetic local encrypted in-memory backup; does not establish production RPO/RTO, durable key escrow or fresh-beneficiary mailbox delivery",
+        "limits": (
+            "Synthetic local encrypted in-memory backup; does not establish production RPO/RTO, "
+            "durable key escrow or fresh-beneficiary mailbox delivery"
+        ),
     }
     Path(args.report).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))

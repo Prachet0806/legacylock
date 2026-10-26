@@ -5,6 +5,7 @@ multiply by worker count. Sufficient for the MVP single-worker deployment;
 a shared store (Redis) is required before scaling horizontally.
 """
 
+import logging
 import os
 import time
 from collections import defaultdict
@@ -13,6 +14,10 @@ from collections.abc import Awaitable, Callable
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+from config import get_settings
+
+logger = logging.getLogger("legacylock.rate_limiter")
 
 # Stricter buckets for sensitive routes: (per-minute, per-hour).
 # NOTE: matching is prefix-based but each entry below names a FULL route
@@ -98,12 +103,13 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
 
         # Skip rate limiting in test environment
         try:
-            from config import get_settings
-
             if get_settings().environment == "test" and os.environ.get("RATE_LIMIT_TESTING") != "1":
                 return await call_next(request)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Could not read environment for rate-limit test bypass; enforcing limits: %s",
+                type(exc).__name__,
+            )
 
         client_ip = self._get_client_ip(request)
         (per_min, per_hour), bucket_prefix = self._limits_for(request.url.path)

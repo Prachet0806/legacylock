@@ -25,7 +25,9 @@ router = APIRouter(
 def _get_vault(db: Session, current_user: User) -> Vault:
     """Get vault scoped to current user."""
     vault = (
-        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
+        db.query(Vault)
+        .filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True))
+        .first()
     )
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")

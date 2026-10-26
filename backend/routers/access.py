@@ -50,7 +50,7 @@ def _get_vault(db: Session, current_user: User | Beneficiary | None = None) -> V
         if vault_id is None and isinstance(current_user, User):
             vault = (
                 db.query(Vault)
-                .filter(Vault.user_id == current_user.id, Vault.is_primary == True)
+                .filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True))
                 .first()
             )
             if vault:

@@ -18,7 +18,10 @@ from services.auth import (
 
 # Argon2id hash of a dummy secret. Verified (and discarded) on unknown-email
 # logins so existent vs non-existent accounts take the same time.
-_DUMMY_HASH = "$argon2id$v=19$m=65536,t=3,p=4$lVyi01Da0+4qcgurGVRIjQ$aDX//0PsB+UKqM5W/ZRGk1tB5lldLeBGf0OHvtdw2dI"
+_DUMMY_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$lVyi01Da0+4qcgurGVRIjQ$"
+    "aDX//0PsB+UKqM5W/ZRGk1tB5lldLeBGf0OHvtdw2dI"
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -209,7 +212,9 @@ async def resend_verification(
             await issue_verification(db, user, enforce_cooldown=True)
             db.commit()
         except VerificationCooldown:
-            pass
+            # Keep the generic response while releasing the row lock acquired
+            # before the cooldown check; do not reveal account activity.
+            db.rollback()
         except Exception as exc:
             db.rollback()
             logging.getLogger("legacylock.auth").error(  # noqa: TRY400 - omit sensitive DB URL
@@ -249,7 +254,11 @@ def login(
 
     # Authentication has no domain side effects: vault provisioning happens
     # explicitly at setup (PUT /vault/crypto-material), not here.
-    vault = db.query(Vault).filter(Vault.user_id == user.id, Vault.is_primary == True).first()
+    vault = (
+        db.query(Vault)
+        .filter(Vault.user_id == user.id, Vault.is_primary.is_(True))
+        .first()
+    )
 
     from services.sessions import issue
 

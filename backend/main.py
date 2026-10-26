@@ -17,6 +17,7 @@ from middleware import (
     RequestIdMiddleware,
     SecurityHeadersMiddleware,
 )
+from middleware.body_limit import BodyLimitMiddleware
 from routers import (
     access,
     auth,
@@ -164,8 +165,6 @@ app.add_middleware(RateLimiterMiddleware, requests_per_minute=60, requests_per_h
 
 # CSRF origin check for cookie-authed mutations (inside CORS so preflights pass first)
 app.add_middleware(OriginCheckMiddleware)
-from middleware.body_limit import BodyLimitMiddleware
-
 app.add_middleware(BodyLimitMiddleware)
 app.add_middleware(
     TrustedHostMiddleware,

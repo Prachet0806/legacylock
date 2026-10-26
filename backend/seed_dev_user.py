@@ -54,7 +54,11 @@ def main() -> int:
                 user.email_verified_at = datetime.now(UTC)
                 db.commit()
             print(f"User {email} already exists")
-        vault = db.query(Vault).filter(Vault.user_id == user.id, Vault.is_primary == True).first()
+        vault = (
+            db.query(Vault)
+            .filter(Vault.user_id == user.id, Vault.is_primary.is_(True))
+            .first()
+        )
         if not vault:
             vault = Vault(user_id=user.id, name="Primary Vault", is_primary=True)
             db.add(vault)

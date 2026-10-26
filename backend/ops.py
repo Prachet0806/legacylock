@@ -185,7 +185,8 @@ def adopt_legacy_release_evidence(db):
                 f"beneficiary:{ben.id}",
                 ben.email,
                 "LegacyLock - Release reconciliation",
-                "Access was previously released. Sign in using your email and separately stored recovery shares.",
+                "Access was previously released. Sign in using your email and separately stored "
+                "recovery shares.",
                 beneficiary=ben,
             )
             job.state, job.last_error = "DEAD", "legacy_release_reconcile"
@@ -209,7 +210,8 @@ def main():
         if args.quarantine_restored:
             if not args.ack_isolated_restore or not args.previous_auth_epoch:
                 parser.error(
-                    "Restore quarantine requires an isolated-restore acknowledgment and previous epoch"
+                    "Restore quarantine requires an isolated-restore acknowledgment and "
+                    "previous epoch"
                 )
             quarantine_restored_database(db, args.previous_auth_epoch)
         if args.adopt_legacy_release_evidence:

@@ -219,7 +219,7 @@ def _get_vault(db: Session, current_user: User | None = None) -> Vault:
     if current_user is not None:
         vault = (
             db.query(Vault)
-            .filter(Vault.user_id == current_user.id, Vault.is_primary == True)
+            .filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True))
             .first()
         )
         if vault:
@@ -600,7 +600,9 @@ def put_recovery_policy(
     Re-saving the identical policy is allowed (no-op).
     """
     vault = (
-        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
+        db.query(Vault)
+        .filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True))
+        .first()
     )
     if not vault:
         raise HTTPException(404, "Vault not found; start a recovery ceremony")

@@ -25,7 +25,14 @@ def upgrade():
             "recovery_status IN ('READY','DRAFT','LEGACY','UNINITIALIZED')",
         )
     op.execute(
-        "UPDATE vault SET recovery_status = CASE WHEN wrapped_vmk IS NULL THEN 'UNINITIALIZED' ELSE 'LEGACY' END, material_revision = CASE WHEN wrapped_vmk IS NULL THEN 0 ELSE 1 END"
+        """
+        UPDATE vault
+        SET recovery_status = CASE
+                WHEN wrapped_vmk IS NULL THEN 'UNINITIALIZED'
+                ELSE 'LEGACY'
+            END,
+            material_revision = CASE WHEN wrapped_vmk IS NULL THEN 0 ELSE 1 END
+        """
     )
     op.add_column(
         "vault_status", sa.Column("armed", sa.Boolean(), nullable=False, server_default=sa.false())
@@ -34,7 +41,13 @@ def upgrade():
         "vault_status", sa.Column("episode", sa.Integer(), nullable=False, server_default="0")
     )
     op.execute(
-        "UPDATE vault_status SET armed = true WHERE vault_id IN (SELECT vault_id FROM heartbeat_config WHERE last_check_in IS NOT NULL)"
+        """
+        UPDATE vault_status
+        SET armed = true
+        WHERE vault_id IN (
+            SELECT vault_id FROM heartbeat_config WHERE last_check_in IS NOT NULL
+        )
+        """
     )
     op.add_column(
         "beneficiary",
@@ -42,7 +55,14 @@ def upgrade():
     )
     op.add_column("beneficiary", sa.Column("ceremony_generation", sa.String(32), nullable=True))
     op.execute(
-        "UPDATE beneficiary SET ceremony_generation = (SELECT recovery_generation FROM vault WHERE vault.id = beneficiary.vault_id)"
+        """
+        UPDATE beneficiary
+        SET ceremony_generation = (
+            SELECT recovery_generation
+            FROM vault
+            WHERE vault.id = beneficiary.vault_id
+        )
+        """
     )
     op.create_table(
         "recovery_ceremony",
