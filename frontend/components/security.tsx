@@ -4,7 +4,12 @@ import { useState } from "react";
 import { Info, Lock, LockOpen, ShieldCheck } from "lucide-react";
 import { clsx } from "clsx";
 
-export function VaultLockIndicator({ unlocked, onLock }: { unlocked: boolean; onLock?: () => void }) {
+export function VaultLockIndicator({ unlocked, recoveryReady = null, heartbeatActive = null, onLock }: {
+  unlocked: boolean;
+  recoveryReady?: boolean | null;
+  heartbeatActive?: boolean | null;
+  onLock?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -36,12 +41,12 @@ export function VaultLockIndicator({ unlocked, onLock }: { unlocked: boolean; on
                 Local encryption enabled
               </li>
               <li className="flex items-center gap-2 text-muted">
-                <ShieldCheck className="h-3.5 w-3.5 text-success" />
-                Recovery configured
+                {recoveryReady ? <ShieldCheck className="h-3.5 w-3.5 text-success" /> : <Info className="h-3.5 w-3.5 text-faint" />}
+                {recoveryReady === null ? "Recovery status not checked" : recoveryReady ? "Recovery checks complete (owner-reported)" : "Recovery not ready"}
               </li>
               <li className="flex items-center gap-2 text-muted">
-                <ShieldCheck className="h-3.5 w-3.5 text-success" />
-                Heartbeat active
+                {heartbeatActive ? <ShieldCheck className="h-3.5 w-3.5 text-success" /> : <Info className="h-3.5 w-3.5 text-faint" />}
+                {heartbeatActive === null ? "Heartbeat status not checked" : heartbeatActive ? "Heartbeat armed" : "Heartbeat not armed"}
               </li>
             </ul>
             <p className="mt-3 text-xs leading-relaxed text-faint">

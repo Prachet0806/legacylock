@@ -54,16 +54,6 @@ def upgrade():
         sa.Column("contact_revision", sa.Integer(), nullable=False, server_default="1"),
     )
     op.add_column("beneficiary", sa.Column("ceremony_generation", sa.String(32), nullable=True))
-    op.execute(
-        """
-        UPDATE beneficiary
-        SET ceremony_generation = (
-            SELECT recovery_generation
-            FROM vault
-            WHERE vault.id = beneficiary.vault_id
-        )
-        """
-    )
     op.create_table(
         "recovery_ceremony",
         sa.Column("id", sa.Integer(), primary_key=True),

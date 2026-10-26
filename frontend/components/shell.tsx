@@ -15,7 +15,8 @@ import {
   Vault as VaultIcon,
 } from "lucide-react";
 import { clsx } from "clsx";
-import { checkin, getAccessStatus, getCryptoMaterial, getMe, getVaultStatus, logout, revokeBeneficiarySession } from "../lib/client";
+import { checkin, getAccessStatus, getCryptoMaterial, getHeartbeat, getMe, getVaultStatus, logout, revokeBeneficiarySession } from "../lib/client";
+import { getReadiness } from "../lib/api/owner";
 import {bindVault} from "../lib/crypto-session";
 import { useVault } from "../lib/store/vault-context";
 import { useToast } from "./toast";
@@ -78,6 +79,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { notify } = useToast();
   const { unlocked, lock } = useVault();
   const [status, setStatus] = useState<string>("active");
+  const [recoveryReady, setRecoveryReady] = useState<boolean | null>(null);
+  const [heartbeatActive, setHeartbeatActive] = useState<boolean | null>(null);
 
   // /register + /verify-email must stay public: logged-out newcomers can only
   // create and verify accounts from outside any session.
@@ -145,6 +148,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       .then((s) => setStatus(s.status))
       .catch(() => {});
   }, [pathname, isPublic, authed, principal]);
+
+  useEffect(() => {
+    if (isPublic || !authed || principal !== "owner") {
+      setRecoveryReady(null);
+      setHeartbeatActive(null);
+      return;
+    }
+    setRecoveryReady(null);
+    setHeartbeatActive(null);
+    let cancelled = false;
+    getReadiness()
+      .then((evidence) => {
+        if (!cancelled) {
+          setRecoveryReady(
+            evidence.initialized
+              && evidence.ceremony_status === "READY"
+              && evidence.quorum_assigned
+              && evidence.owner_reported_drill !== null,
+          );
+        }
+      })
+      .catch(() => { if (!cancelled) setRecoveryReady(null); });
+    getHeartbeat()
+      .then((heartbeat) => { if (!cancelled) setHeartbeatActive(heartbeat.armed); })
+      .catch(() => { if (!cancelled) setHeartbeatActive(null); });
+    return () => { cancelled = true; };
+  }, [pathname, isPublic, authed, principal, sessionVersion]);
 
   async function onCheckin() {
     try {
@@ -240,7 +270,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Check in
               </button>
             )}
-            <VaultLockIndicator unlocked={unlocked} onLock={lock} />
+            <VaultLockIndicator
+              unlocked={unlocked}
+              recoveryReady={recoveryReady}
+              heartbeatActive={heartbeatActive}
+              onLock={lock}
+            />
             <button type="button" className="btn-ghost px-2 py-1 lg:hidden" onClick={onLogout} aria-label="Log out">
               <LogOut className="h-4 w-4" />
             </button>

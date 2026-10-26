@@ -194,9 +194,9 @@ export default function BeneficiariesPage() {
   async function onInvite(b: Beneficiary) {
     try {
       const r = await inviteBeneficiary(b.id);
-      setLink(r.invitation_link);
+      setLink(r.invitation_link ?? "");
       await refresh();
-      notify("success", `Invitation ready for ${b.name}.`);
+      notify("success", r.invitation_link ? `Invitation link ready for ${b.name}.` : `Invitation email queued for ${b.name}.`);
     } catch {
       notify("error", "Invite failed.");
     }

@@ -99,6 +99,10 @@ class TestCrossTenantIsolation:
             headers=auth,
         ).json()["id"]
         bh, _ = _beneficiary_of(client, auth)
+        from services.auth import decode_access_token
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault(decode_access_token(auth["Authorization"].split()[1])["vault_id"])
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
             rows = client.get("/access/messages", headers=bh).json()
@@ -177,6 +181,9 @@ class TestDatabaseZeroKnowledge:
             owner_h = {"Authorization": f"Bearer {create_access_token(u.id, v.id, role='owner')}"}
         finally:
             db.close()
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault(v.id)
         client.post(
             "/vault/messages",
             json={

@@ -56,6 +56,9 @@ class TestNotificationTransitions:
 
 class TestVaultRuntimeGuards:
     def test_checkin_cannot_revive_triggered(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         body = {"password": "TestPass123!Long", "confirm": True}
         assert client.post("/vault/trigger", json=body, headers=auth).status_code == 200
         # Grace-cancel check-in must not revive a TRIGGERED vault.

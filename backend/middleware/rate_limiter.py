@@ -72,6 +72,14 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         segment), so e.g. /access/session and /access/status — which share the
         "access" segment but have different limits — get independent buckets.
         """
+        parts = path.strip("/").split("/")
+        if (
+            len(parts) == 3
+            and parts[0] == "beneficiaries"
+            and parts[1].isdecimal()
+            and parts[2] == "invite"
+        ):
+            return (10, 100), "/beneficiaries/{id}/invite"
         for prefix, limits in _ROUTE_LIMITS.items():
             if path == prefix or (
                 prefix in _DYNAMIC_ROUTE_PREFIXES and path.startswith(prefix + "/")

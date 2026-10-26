@@ -22,6 +22,9 @@ def _vault_id(client, auth):
 
 class TestTriggerCas:
     def test_double_trigger_is_idempotent(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         body = {"password": "TestPass123!Long", "confirm": True}
         first = client.post("/vault/trigger", json=body, headers=auth)
         assert first.status_code == 200
@@ -31,6 +34,9 @@ class TestTriggerCas:
         assert second.json()["already"] is True
 
     def test_concurrent_move_to_grace_single_winner(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         from db import SessionLocal
         from services.trigger_service import move_to_grace
 
@@ -53,6 +59,9 @@ class TestTriggerCas:
         assert sorted(results) == [False, True]
 
     def test_concurrent_trigger_single_winner(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         from db import SessionLocal
         from services.trigger_service import move_to_grace, trigger_vault
 

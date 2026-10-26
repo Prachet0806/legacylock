@@ -137,7 +137,7 @@ export const addBeneficiary = (body: { name: string; email: string; phone?: stri
 export const deleteBeneficiary = (id: number) =>
   ownerFetch<void>(`/beneficiaries/${id}`, { method: "DELETE" });
 export const inviteBeneficiary = (id: number) =>
-  ownerFetch<{ invitation_link: string; beneficiary_id: number }>(`/beneficiaries/${id}/invite`, {
+  ownerFetch<{ invitation_link?: string; beneficiary_id: number }>(`/beneficiaries/${id}/invite`, {
     method: "POST",
   });
 export const assignShare = (beneficiaryId: number, share_index: number) =>
@@ -151,6 +151,7 @@ export interface HeartbeatConfig {
   grace_days: number;
   last_check_in: string | null;
   updated_at?: string;
+  armed: boolean;
 }
 export const getHeartbeat = () => ownerFetch<HeartbeatConfig>("/heartbeat");
 export const putHeartbeat = (body: { interval_days: number; grace_days: number }) =>

@@ -109,6 +109,14 @@ def test_rate_limit_does_not_match_fake_login_path() -> None:
     assert limiter._limits_for("/auth/login") == ((5, 60), "/auth/login")
     assert limiter._limits_for("/auth/loginanything") != ((5, 60), "/auth/login")
     assert limiter._limits_for("/auth/login/anything") != ((5, 60), "/auth/login")
+    assert limiter._limits_for("/beneficiaries/17/invite") == (
+        (10, 100),
+        "/beneficiaries/{id}/invite",
+    )
+    assert limiter._limits_for("/beneficiaries/not-an-id/invite") != (
+        (10, 100),
+        "/beneficiaries/{id}/invite",
+    )
 
 
 def test_many_vault_login_requires_explicit_recipient_id(client: TestClient) -> None:

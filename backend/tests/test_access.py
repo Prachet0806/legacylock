@@ -105,6 +105,10 @@ class TestInviteFlow:
 
     def test_status_gated_by_trigger(self, client, auth):
         bh = _beneficiary_headers(client, auth)
+        from services.auth import decode_access_token
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault(decode_access_token(auth["Authorization"].split()[1])["vault_id"])
         assert client.get("/access/status", headers=bh).json()["vault_status"] == "active"
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
@@ -169,6 +173,10 @@ class TestRecoveryMessages:
 
     def test_list_and_get_after_trigger(self, client, auth):
         mid, bh = self._setup(client, auth)
+        from services.auth import decode_access_token
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault(decode_access_token(auth["Authorization"].split()[1])["vault_id"])
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
             rows = client.get("/access/messages", headers=bh).json()
@@ -186,6 +194,9 @@ class TestRecoveryMessages:
 
 class TestAuditPersisted:
     def test_trigger_writes_audit_row(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         from db import SessionLocal
         from models import AuditEvent
 

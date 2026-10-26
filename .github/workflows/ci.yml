@@ -194,8 +194,21 @@ jobs:
             API_UPSTREAM=http://backend:8000
       - name: Standalone assets serve from the image
         run: |
+          mkdir image-db-tls
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout image-db-tls/postgres.key -out image-db-tls/postgres.crt \
+            -subj "/CN=postgres" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign" \
+            -addext "extendedKeyUsage=serverAuth" \
+            -addext "subjectAltName=DNS:postgres"
+          chmod 600 image-db-tls/postgres.key
           docker network create qualification
-          docker run -d --name postgres --network qualification -e POSTGRES_USER=legacylock -e POSTGRES_PASSWORD=ci-only -e POSTGRES_DB=legacylock postgres:17-alpine
+          docker run -d --name postgres --network qualification \
+            --user 0:0 \
+            --mount type=bind,source="$PWD/image-db-tls",target=/run/postgres-tls,readonly \
+            -e POSTGRES_USER=legacylock -e POSTGRES_PASSWORD=ci-only -e POSTGRES_DB=legacylock \
+            postgres:17-alpine sh -c 'cp /run/postgres-tls/postgres.crt /tmp/postgres.crt && cp /run/postgres-tls/postgres.key /tmp/postgres.key && chown postgres:postgres /tmp/postgres.crt /tmp/postgres.key && chmod 600 /tmp/postgres.key && exec /usr/local/bin/docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/postgres.crt -c ssl_key_file=/tmp/postgres.key'
           for i in $(seq 1 30); do
             if docker exec postgres pg_isready -U legacylock; then break; fi
             sleep 1
@@ -206,10 +219,27 @@ jobs:
           openssl rsa -in image-keys/jwt_private.pem -pubout -out image-keys/jwt_public.pem
           chmod 644 image-keys/*.pem # throwaway CI keys readable by the container's unprivileged user
           PAYLOAD_KEY=$(openssl rand -base64 32)
-          # This disposable PostgreSQL fixture has TLS disabled. Keep production's
-          # certificate-verified TLS contract intact and smoke-test the image in
-          # test mode while explicitly selecting PostgreSQL instead of SQLite.
-          docker run -d --name backend --network qualification --mount type=bind,source="$PWD/image-keys",target=/run/secrets,readonly -e ENVIRONMENT=test -e USE_POSTGRES=1 -e DATABASE_URL=postgresql+psycopg://legacylock:ci-only@postgres:5432/legacylock -e SESSION_SECRET=ci-image-isolated-configuration-0000000000 -e JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private.pem -e JWT_PUBLIC_KEY_PATH=/run/secrets/jwt_public.pem -e DELIVERY_PAYLOAD_KEY="$PAYLOAD_KEY" -e RESEND_API_KEY=ci-never-send -e DELIVERY_ENABLED=false -e RELEASE_HOLD=true -e BACKGROUND_IN_API=false -e ALLOWED_HOSTS=backend,localhost,127.0.0.1 legacylock-backend:ci
+          # Exercise the production PostgreSQL TLS verification contract with a
+          # disposable CA certificate mounted read-only into the image.
+          docker run -d --name backend --network qualification \
+            --mount type=bind,source="$PWD/image-keys/jwt_private.pem",target=/run/secrets/jwt_private.pem,readonly \
+            --mount type=bind,source="$PWD/image-keys/jwt_public.pem",target=/run/secrets/jwt_public.pem,readonly \
+            --mount type=bind,source="$PWD/image-db-tls/postgres.crt",target=/run/secrets/postgres.crt,readonly \
+            -e ENVIRONMENT=production \
+            -e "DATABASE_URL=postgresql+psycopg://legacylock:ci-only@postgres:5432/legacylock?sslmode=verify-full&sslrootcert=/run/secrets/postgres.crt" \
+            -e SESSION_SECRET=ci-image-isolated-configuration-0000000000 \
+            -e AUTH_EPOCH=ci-image-isolated \
+            -e JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private.pem \
+            -e JWT_PUBLIC_KEY_PATH=/run/secrets/jwt_public.pem \
+            -e DELIVERY_PAYLOAD_KEY="$PAYLOAD_KEY" \
+            -e RESEND_API_KEY=ci-never-send \
+            -e NOTIFICATION_EMAIL_FROM=noreply@app.legacylock.test \
+            -e DELIVERY_ENABLED=false -e RELEASE_HOLD=true -e BACKGROUND_IN_API=false \
+            -e HEARTBEAT_ENABLED=true -e SMS_ENABLED=false \
+            -e FRONTEND_URL=https://app.legacylock.test \
+            -e ALLOWED_ORIGINS=https://app.legacylock.test \
+            -e ALLOWED_HOSTS=backend,localhost,127.0.0.1 \
+            legacylock-backend:ci
           docker run -d --name frontend --network qualification -p 3000:3000 legacylock-frontend:ci
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:3000/ > /tmp/index.html; then break; fi

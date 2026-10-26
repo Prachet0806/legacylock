@@ -71,6 +71,9 @@ class TestStats:
         assert data["vault_status"] == "active"
 
     def test_vault_status_reflects_trigger(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         data = client.get("/stats", headers=auth).json()
         assert data["vault_status"] == "triggered"

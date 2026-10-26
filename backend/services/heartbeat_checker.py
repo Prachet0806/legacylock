@@ -4,14 +4,26 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Interval, String, cast, func
+from sqlalchemy.orm import Session
 
 from config import get_settings
-from models import HeartbeatConfig, VaultStatus
+from models import HeartbeatConfig, Vault, VaultStatus
 from services.audit import record_audit
 from services.outbox import utc
+from services.recovery_readiness import release_ready
 from services.trigger_service import lock_status, release_locked, stage_warning
 
 logger = logging.getLogger("legacylock.checker")
+
+
+def _can_advance(db: Session, vs: VaultStatus, cfg: HeartbeatConfig, now: datetime) -> bool:
+    if not vs.armed or vs.state == "triggered":
+        return False
+    deadline = utc(cfg.last_check_in) + timedelta(days=int(cfg.interval_days))
+    if now < deadline:
+        return False
+    vault = db.get(Vault, vs.vault_id)
+    return bool(vault is not None and release_ready(db, vault))
 
 
 def check_heartbeat(db, now=None, limit=100, vault_id=None):
@@ -45,10 +57,10 @@ def check_heartbeat(db, now=None, limit=100, vault_id=None):
         try:
             vs = lock_status(db, ident)
             cfg = db.query(HeartbeatConfig).filter_by(vault_id=ident).populate_existing().one()
-            deadline = utc(cfg.last_check_in) + timedelta(days=cfg.interval_days)
-            if not vs.armed or vs.state == "triggered" or now < deadline:
+            if not _can_advance(db, vs, cfg, now):
                 db.rollback()
                 continue
+            deadline = utc(cfg.last_check_in) + timedelta(days=int(cfg.interval_days))
             if vs.state == "active":
                 vs.state, vs.grace_started_at, vs.updated_at = "grace", deadline, now
                 vs.episode += 1

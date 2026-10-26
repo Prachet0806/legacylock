@@ -108,6 +108,8 @@ def test_rewrap_is_complete_and_revision_checked(client, auth):
 
 
 def test_release_rollback_and_retry_have_one_event(client, auth):
+    from tests.conftest import prepare_release_ready_vault
+
     with SessionLocal() as db:
         vid = db.query(Vault.id).scalar()
         db.add(
@@ -116,6 +118,7 @@ def test_release_rollback_and_retry_have_one_event(client, auth):
             )
         )
         db.commit()
+        prepare_release_ready_vault(vid)
         trigger_vault(db, vid, "manual")
         db.rollback()
         assert db.query(BusinessEvent).count() == 0
@@ -125,11 +128,15 @@ def test_release_rollback_and_retry_have_one_event(client, auth):
         trigger_vault(db, vid, "manual")
         db.commit()
         assert db.query(BusinessEvent).filter_by(kind="released").count() == 1
-        assert db.query(DeliveryJob).count() == 1
-        assert "recovery shares" in unprotect(db.query(DeliveryJob).one())["body"]
+        jobs = db.query(DeliveryJob).all()
+        assert len(jobs) == 3
+        assert all("recovery shares" in unprotect(job)["body"] for job in jobs)
 
 
 def test_stale_inactivity_observation_cannot_release_after_checkin(client, auth):
+    from tests.conftest import prepare_release_ready_vault
+
+    prepare_release_ready_vault()
     with SessionLocal() as db:
         vid = db.query(Vault.id).scalar()
         db.add(
@@ -321,6 +328,9 @@ def test_payload_ciphertext_cannot_be_replayed_to_another_job(client, auth):
 
 
 def test_release_hold_preserves_checkin_and_auth_delivery(client, auth, monkeypatch):
+    from tests.conftest import prepare_release_ready_vault
+
+    prepare_release_ready_vault()
     from config import get_settings
 
     settings = get_settings()
@@ -419,6 +429,9 @@ def test_credential_path_redaction_applies_to_uvicorn_arguments():
 
 
 def test_recovery_degradation_does_not_disable_checkins_or_api_readiness(client, auth, monkeypatch):
+    from tests.conftest import prepare_release_ready_vault
+
+    prepare_release_ready_vault()
     from config import get_settings
 
     settings = get_settings()

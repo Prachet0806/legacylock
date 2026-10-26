@@ -1,6 +1,9 @@
 """Unit tests for services/heartbeat_checker.py — no HTTP calls."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+
+from sqlalchemy.orm import Session
 
 from models import HeartbeatConfig, NotificationLog, User, Vault, VaultStatus
 from services.auth import hash_password
@@ -65,6 +68,58 @@ def _seed_status(db, vault_id, state: str = "active", grace_started_days_ago: in
     return vs
 
 
+def _seed_release_readiness(db: Session, vault: Vault) -> None:
+    """Attach current ceremony, accepted quorum and owner-reported drill proof."""
+    import base64
+    import json
+    import uuid
+
+    from models import Beneficiary, RecoveryCeremony
+    from services.recovery_readiness import assignment_signature
+
+    generation = uuid.uuid4().hex
+    typed_vault = cast(Any, vault)
+    typed_vault.wrapped_vmk = base64.b64encode(b"v" * 40).decode()
+    typed_vault.material_revision = 1
+    typed_vault.recovery_status = "READY"
+    typed_vault.recovery_generation = generation
+    typed_vault.recovery_threshold = 2
+    typed_vault.recovery_total = 3
+    ceremony = RecoveryCeremony(
+        vault_id=vault.id,
+        generation=generation,
+        threshold=2,
+        total=3,
+        status="FINALIZED",
+        expected_revision=max(0, int(vault.material_revision) - 1),
+        acknowledgments="[1,2,3]",
+    )
+    db.add(ceremony)
+    for index in (1, 2):
+        db.add(
+            Beneficiary(
+                vault_id=vault.id,
+                name=f"Ready recipient {index}",
+                email=f"ready-{index}@example.com",
+                share_index=index,
+                ceremony_generation=generation,
+                invitation_status="accepted",
+            )
+        )
+    db.flush()
+    signature, _ = assignment_signature(db, vault)
+    cast(Any, ceremony).drill_data = json.dumps(
+        {
+            "material_revision": vault.material_revision,
+            "assignment_signature": signature,
+            "generation": generation,
+            "reported_at": datetime.now(UTC).isoformat(),
+            "verifier": "owner_report",
+        }
+    )
+    db.commit()
+
+
 class TestHeartbeatCheckerNoOp:
     def test_no_config_returns_empty(self):
         from services.heartbeat_checker import check_heartbeat
@@ -103,11 +158,23 @@ class TestHeartbeatCheckerNoOp:
 
 
 class TestHeartbeatCheckerGrace:
+    def test_unready_vault_does_not_enter_grace_or_release(self) -> None:
+        from services.heartbeat_checker import check_heartbeat
+
+        db = _make_db()
+        _, vault = _seed_user_vault(db)
+        _seed_config(db, vault.id, 30, 7, 100)
+        _seed_status(db, vault.id, "active")
+        assert check_heartbeat(db) == []
+        vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
+        assert vs.state == "active"
+
     def test_interval_exceeded_starts_grace(self):
         from services.heartbeat_checker import check_heartbeat
 
         db = _make_db()
         _, vault = _seed_user_vault(db)
+        _seed_release_readiness(db, vault)
         _seed_config(db, vault.id, 30, 7, 31)
         _seed_status(db, vault.id, "active")
         result = check_heartbeat(db)
@@ -118,6 +185,7 @@ class TestHeartbeatCheckerGrace:
 
         db = _make_db()
         _, vault = _seed_user_vault(db)
+        _seed_release_readiness(db, vault)
         _seed_config(db, vault.id, 30, 7, 31)
         _seed_status(db, vault.id, "active")
         check_heartbeat(db)
@@ -130,6 +198,7 @@ class TestHeartbeatCheckerGrace:
 
         db = _make_db()
         _, vault = _seed_user_vault(db)
+        _seed_release_readiness(db, vault)
         _seed_config(db, vault.id, 30, 7, 31)
         _seed_status(db, vault.id, "grace", grace_started_days_ago=3)
         result = check_heartbeat(db)
@@ -142,6 +211,7 @@ class TestHeartbeatCheckerTriggered:
 
         db = _make_db()
         _, vault = _seed_user_vault(db)
+        _seed_release_readiness(db, vault)
         _seed_config(db, vault.id, 30, 7, 100)
         _seed_status(db, vault.id, "grace", grace_started_days_ago=8)
         result = check_heartbeat(db)
@@ -152,6 +222,7 @@ class TestHeartbeatCheckerTriggered:
 
         db = _make_db()
         _, vault = _seed_user_vault(db)
+        _seed_release_readiness(db, vault)
         _seed_config(db, vault.id, 30, 7, 100)
         _seed_status(db, vault.id, "grace", grace_started_days_ago=8)
         check_heartbeat(db)

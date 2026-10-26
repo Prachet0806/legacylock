@@ -68,6 +68,64 @@ _upgrade_test_schema()
 _TestSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def prepare_release_ready_vault(vault_id: int | None = None) -> None:
+    """Give release-flow tests explicit current ceremony, quorum and drill evidence."""
+    import json
+    import uuid
+    from datetime import UTC, datetime
+    from typing import Any, cast
+
+    from models import Beneficiary, RecoveryCeremony
+    from services.recovery_readiness import assignment_signature
+
+    with _TestSession() as db:
+        vault = (
+            db.query(Vault).filter(Vault.id == vault_id).one()
+            if vault_id
+            else db.query(Vault).one()
+        )
+        generation = uuid.uuid4().hex
+        typed_vault = cast(Any, vault)
+        typed_vault.recovery_status = "READY"
+        typed_vault.recovery_generation = generation
+        typed_vault.recovery_threshold = 2
+        typed_vault.recovery_total = 3
+        ceremony = RecoveryCeremony(
+            vault_id=vault.id,
+            generation=generation,
+            threshold=2,
+            total=3,
+            status="FINALIZED",
+            expected_revision=max(0, int(vault.material_revision) - 1),
+            acknowledgments="[1,2,3]",
+        )
+        db.add(ceremony)
+        db.flush()
+        for index in (1, 2):
+            db.add(
+                Beneficiary(
+                    vault_id=vault.id,
+                    name=f"Ready recipient {index}",
+                    email=f"ready-recipient-{index}@example.com",
+                    share_index=index,
+                    ceremony_generation=generation,
+                    invitation_status="accepted",
+                )
+            )
+        db.flush()
+        signature, _ = assignment_signature(db, vault)
+        cast(Any, ceremony).drill_data = json.dumps(
+            {
+                "material_revision": vault.material_revision,
+                "assignment_signature": signature,
+                "generation": generation,
+                "reported_at": datetime.now(UTC).isoformat(),
+                "verifier": "owner_report",
+            }
+        )
+        db.commit()
+
+
 def _override_get_db():
     db = _TestSession()
     try:
@@ -127,6 +185,12 @@ def auth(client):
         return {"Authorization": f"Bearer {access_token}"}
     finally:
         db.close()
+
+
+@pytest.fixture
+def release_ready(auth: dict[str, str]) -> dict[str, str]:
+    prepare_release_ready_vault()
+    return auth
 
 
 @pytest.fixture(autouse=True)

@@ -22,6 +22,9 @@ class TestRunCheckValidation:
 
 class TestRunCheckAutoTrigger:
     def _setup(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         assert (
             client.put(
                 "/heartbeat", json={"interval_days": 30, "grace_days": 7}, headers=auth

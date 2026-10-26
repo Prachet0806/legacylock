@@ -122,8 +122,22 @@ def test_expand_migration_preserves_real_legacy_crypto_and_checkin_state(tmp_pat
             stamps,
         )
         connection.execute(
+            text("UPDATE vault SET recovery_generation=:generation WHERE id=1"),
+            dict(generation="a" * 32),
+        )
+        connection.execute(
             text(
-                "INSERT INTO vault_message (vault_id,label,ciphertext,wrapped_mek,crypto_metadata,created_at,updated_at) VALUES (1,'Fixture',:ciphertext,:wrapped,:metadata,:now,:now)"
+                "INSERT INTO beneficiary "
+                "(vault_id,name,email,share_index,invitation_status,created_at,updated_at) "
+                "VALUES (1,'Legacy recipient','legacy-recipient@example.com',1,'accepted',:now,:now)"
+            ),
+            stamps,
+        )
+        connection.execute(
+            text(
+                "INSERT INTO vault_message "
+                "(vault_id,label,ciphertext,wrapped_mek,crypto_metadata,created_at,updated_at) "
+                "VALUES (1,'Fixture',:ciphertext,:wrapped,:metadata,:now,:now)"
             ),
             dict(
                 stamps,
@@ -145,6 +159,15 @@ def test_expand_migration_preserves_real_legacy_crypto_and_checkin_state(tmp_pat
         assert connection.execute(
             text("SELECT state,armed FROM vault_status ORDER BY vault_id")
         ).all() == [("active", 1), ("active", 0), ("triggered", 0)]
+        assert (
+            connection.execute(
+                text(
+                    "SELECT ceremony_generation FROM beneficiary "
+                    "WHERE email='legacy-recipient@example.com'"
+                )
+            ).scalar_one()
+            is None
+        )
         persisted = connection.execute(
             text("SELECT ciphertext,wrapped_mek FROM vault_message")
         ).one()

@@ -16,6 +16,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def prepare():
+    from tests.conftest import prepare_release_ready_vault
+
+    prepare_release_ready_vault()
     with SessionLocal() as db:
         vid = db.query(Vault.id).scalar()
         db.add(

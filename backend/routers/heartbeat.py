@@ -9,6 +9,7 @@ from deps import get_db, require_owner
 from models import HeartbeatConfig, User, Vault, VaultStatus
 from services.audit import record_audit
 from services.outbox import cancel_warnings
+from services.recovery_readiness import require_release_ready
 from services.trigger_service import lock_status
 
 router = APIRouter(
@@ -26,9 +27,7 @@ router = APIRouter(
 def _get_vault(db: Session, current_user: User) -> Vault:
     """Get the vault for the current owner."""
     vault = (
-        db.query(Vault)
-        .filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True))
-        .first()
+        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True)).first()
     )
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")
@@ -111,6 +110,8 @@ def save_heartbeat(
     cfg.updated_at = datetime.now(UTC)
     vs.state, vs.grace_started_at = "active", None
     if data.armed is not None:
+        if data.armed:
+            require_release_ready(db, int(vault.id))
         vs.armed = data.armed
         if data.armed and cfg.last_check_in is None:
             cfg.last_check_in = datetime.now(UTC)
@@ -126,6 +127,7 @@ def check_in(current_user: User = Depends(require_owner), db: Session = Depends(
     vs = lock_status(db, vault.id)
     if vs.state == "triggered":
         raise HTTPException(409, "Vault already released; a check-in cannot reverse access")
+    require_release_ready(db, int(vault.id))
     cfg = _get_or_create_heartbeat_config(db, vault.id)
     now = datetime.now(UTC)
     cfg.last_check_in = now

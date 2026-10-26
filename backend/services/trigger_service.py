@@ -9,6 +9,7 @@ from config import get_settings
 from models import Beneficiary, BusinessEvent, HeartbeatConfig, User, Vault, VaultStatus
 from services.audit import record_audit
 from services.outbox import cancel_warnings, enqueue, event, utc
+from services.recovery_readiness import release_ready, require_release_ready
 
 
 def lock_status(db, vault_id):
@@ -51,6 +52,7 @@ def release_locked(db, vs, reason, now, actor_type="system", actor_id=0):
         return vs, True
     if get_settings().release_hold:
         raise HTTPException(409, "Release is held for reconciliation")
+    require_release_ready(db, vs.vault_id)
     vs.state, vs.triggered_at, vs.trigger_reason, vs.updated_at = "triggered", now, reason, now
     cancel_warnings(db, vs.vault_id)
     business = event(db, vs.vault_id, "released", vs.version)
@@ -108,6 +110,9 @@ def move_to_grace(db, vault_id, now=None):
     vs = lock_status(db, vault_id)
     cfg = db.query(HeartbeatConfig).filter_by(vault_id=vault_id).populate_existing().first()
     if vs.state != "active" or not vs.armed or not cfg or not cfg.last_check_in:
+        return vs, True
+    vault = db.get(Vault, vault_id)
+    if vault is None or not release_ready(db, vault):
         return vs, True
     deadline = utc(cfg.last_check_in) + timedelta(days=cfg.interval_days)
     if now < deadline:

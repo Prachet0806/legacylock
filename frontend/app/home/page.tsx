@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowRight, CheckCircle2, Vault as VaultIcon } from "lucide-react";
-import { checkin, getHeartbeat, getRecoveryPolicy, getStats, getVaultStatus, nextDeadline } from "../../lib/client";
+import { checkin, getHeartbeat, getStats, getVaultStatus, nextDeadline } from "../../lib/client";
+import { getReadiness, type Readiness } from "../../lib/api/owner";
 import { useToast } from "../../components/toast";
 import { SecurityChecklist } from "../../components/security";
 import { formatCountdown, stateTone } from "../../components/vault-ui";
@@ -22,17 +23,16 @@ export default function Dashboard() {
   const [counts, setCounts] = useState<{ messages: number; beneficiaries: number } | null>(null);
   const [deadline, setDeadline] = useState<string | null>(null);
   const [lastCheckin, setLastCheckin] = useState<string | null>(null);
-  const [recovery, setRecovery] = useState<{ threshold: number; total: number; assigned: number } | null>(null);
+  const [recovery, setRecovery] = useState<Readiness | null>(null);
+  const [heartbeatArmed, setHeartbeatArmed] = useState<boolean | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     (async () => {
-      let beneficiaryCount = 0;
       try {
         const s = await getStats();
         setStatus(s.vault_status);
         setCounts({ messages: s.message_count, beneficiaries: s.beneficiary_count });
-        beneficiaryCount = s.beneficiary_count;
       } catch {
         /* logged out — landing content still renders */
       }
@@ -40,15 +40,11 @@ export default function Dashboard() {
         const hb = await getHeartbeat();
         setDeadline(nextDeadline(hb));
         setLastCheckin(hb.last_check_in ?? null);
+        setHeartbeatArmed(hb.armed);
       } catch {
         /* heartbeat may not exist yet */
       }
-      try {
-        const policy = await getRecoveryPolicy().catch(() => null);
-        if (policy) setRecovery({ threshold: policy.recovery_threshold, total: policy.recovery_total, assigned: beneficiaryCount });
-      } catch {
-        /* ignore */
-      }
+      try { setRecovery(await getReadiness()); } catch { /* recovery status stays unknown */ }
     })();
   }, []);
 
@@ -109,7 +105,7 @@ export default function Dashboard() {
         </Link>
         <Link href="/beneficiaries" className="stat-tile transition-colors hover:border-faint">
           <span className="text-3xl font-bold tabular-nums">
-            {recovery ? `${recovery.assigned} / ${recovery.total}` : counts != null ? `${counts.beneficiaries} / 3` : "–"}
+            {recovery ? `${recovery.eligible_assignments} / ${recovery.total}` : "–"}
           </span>
           <span className="text-sm text-muted">Recovery shares</span>
         </Link>
@@ -125,12 +121,23 @@ export default function Dashboard() {
           <SecurityChecklist
             items={[
               { label: "Messages encrypted locally", ok: true },
-              { label: "Recovery configured", ok: (counts?.beneficiaries ?? 0) > 0 },
+              {
+                label: recovery === null
+                  ? "Recovery status not checked"
+                  : "Recovery ready for release (owner-reported)",
+                ok: !!recovery?.initialized
+                  && recovery.ceremony_status === "READY"
+                  && recovery.quorum_assigned
+                  && recovery.owner_reported_drill !== null,
+              },
               {
                 label: counts ? `${counts.beneficiaries} ${counts.beneficiaries === 1 ? "trusted person" : "trusted people"} assigned` : "Trusted people assigned",
                 ok: (counts?.beneficiaries ?? 0) > 0,
               },
-              { label: "Heartbeat active", ok: status === "active" || status === "grace" },
+              {
+                label: heartbeatArmed === null ? "Heartbeat status not checked" : "Heartbeat armed",
+                ok: heartbeatArmed === true,
+              },
             ]}
           />
         </div>
