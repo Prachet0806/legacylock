@@ -22,6 +22,7 @@ import { useVault } from "../lib/store/vault-context";
 import { useToast } from "./toast";
 import { Spinner, StatusChip } from "./ui";
 import { VaultLockIndicator } from "./security";
+import { ApiError } from "../lib/api/transport";
 
 const NAV_HOME = [
   { href: "/home", label: "Overview", icon: LayoutDashboard },
@@ -47,8 +48,8 @@ function NavGroup({ title, items, pathname, onNav }: {
 }) {
   return (
     <div>
-      <p className="mb-1.5 px-3 text-[11px] font-medium uppercase tracking-[0.14em] text-faint">{title}</p>
-      <nav className="flex flex-col gap-0.5" aria-label={title}>
+      <p className="mb-2 px-3 text-xs font-medium text-faint">{title}</p>
+      <nav className="flex flex-col gap-1" aria-label={title}>
         {items.map((item) => {
           const active = pathname === item.href || pathname?.startsWith(`${item.href}/`);
           const Icon = item.icon;
@@ -58,8 +59,8 @@ function NavGroup({ title, items, pathname, onNav }: {
               href={item.href}
               onClick={onNav}
               className={clsx(
-                "flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors",
-                active ? "bg-raised font-medium text-text" : "text-muted hover:bg-raised/60 hover:text-text",
+                "flex min-h-9 items-center gap-3 rounded-lg border border-transparent px-3 py-1.5 text-sm transition-colors",
+                active ? "border-border bg-raised font-medium text-text" : "text-muted hover:bg-raised/60 hover:text-text",
               )}
               aria-current={active ? "page" : undefined}
             >
@@ -101,6 +102,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (r) => pathname === r || pathname?.startsWith(`${r}/`),
   );
   const [authed, setAuthed] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [sessionVersion, setSessionVersion] = useState(0);
   useEffect(() => { const changed=()=>{setAuthed(false);setSessionVersion(v=>v+1);}; window.addEventListener("legacylock-session-changed",changed); return ()=>window.removeEventListener("legacylock-session-changed",changed); }, []);
   const [principal, setPrincipal] = useState<"owner" | "beneficiary">("owner");
@@ -109,6 +111,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (isPublic) return;
     let cancelled = false;
     setAuthed(false);
+    setAuthError("");
     (async () => {
       if (pathname !== "/recovery") try {
         const me=await getMe();
@@ -119,7 +122,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           setAuthed(true);
         }
         return;
-      } catch {
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 429) {
+          if (!cancelled) setAuthError(e.message);
+          return;
+        }
         // Not an owner — fall through to beneficiary check.
       }
       if (pathname === "/recovery") {
@@ -131,7 +138,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             setAuthed(true);
           }
           return;
-        } catch {
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 429) {
+            if (!cancelled) setAuthError(e.message);
+            return;
+          }
           // Not a beneficiary either.
         }
       }
@@ -182,8 +193,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const s = await getVaultStatus();
       setStatus(s.status);
       notify("success", "Checked in — deadline extended.");
-    } catch {
-      notify("error", "Check-in failed. Are you logged in?");
+    } catch (e) {
+      notify("error", e instanceof Error ? e.message : "Check-in failed.");
     }
   }
 
@@ -198,14 +209,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   if (isPublic) {
-    return <div className="min-h-screen">{children}</div>;
+    return <div className="public-page min-h-screen">{children}</div>;
   }
 
   if (!authed) {
     return (
-      <div className="flex min-h-screen items-center justify-center gap-2 text-sm text-muted">
-        <Spinner />
-        Checking session…
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted">
+        {authError ? <>
+          <p role="alert">{authError}</p>
+          <button type="button" className="btn-secondary" onClick={() => setSessionVersion((v) => v + 1)}>Try again</button>
+        </> : <><Spinner />Checking session…</>}
       </div>
     );
   }
@@ -215,12 +228,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const showBottomNav = !isPublic && authed && !isBeneficiary && isOwnerRoute;
 
   return (
-    <div className="min-h-screen lg:flex">
+      <div className="app-layout min-h-screen lg:flex">
       {/* Desktop sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col gap-6 border-r border-border bg-surface/60 p-4 lg:flex">
-        <Link href="/home" className="flex items-center gap-2 px-1 text-base font-semibold tracking-tight">
-          <VaultIcon className="h-5 w-5 text-accent" />
-          LegacyLock
+      <aside className="app-sidebar hidden w-64 shrink-0 flex-col border-r border-border bg-bg p-5 lg:flex">
+        <Link href="/home" className="brand-lockup flex items-center gap-2.5 text-base font-semibold tracking-tight">
+          <span className="brand-mark"><VaultIcon className="h-4 w-4" /></span>
+          <span>LegacyLock</span>
         </Link>
         {isBeneficiary ? (
           <p className="rounded-xl bg-raised px-3 py-2 text-xs leading-relaxed text-muted">
@@ -233,7 +246,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <NavGroup title="System" items={NAV_SYSTEM} pathname={pathname} />
           </>
         )}
-        <div className="mt-auto flex flex-col gap-2 border-t border-border pt-4">
+        <div className="sidebar-session mt-auto flex flex-col gap-2 border-t border-border pt-4">
           <StatusChip tone={unlocked ? "success" : "neutral"}>
             {unlocked ? <LockOpen className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
             {unlocked ? "Vault unlocked" : "Vault locked"}
@@ -250,11 +263,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1 pb-20 lg:pb-0">
+      <div className="app-main min-w-0 flex-1 pb-20 lg:pb-0">
         {/* Topbar */}
-        <header className="sticky top-0 z-40 flex items-center gap-3 border-b border-border bg-bg/90 px-4 py-3 backdrop-blur">
+        <header className="app-topbar sticky top-0 z-40 flex h-16 items-center gap-3 border-b border-border bg-bg px-5">
           <Link href="/home" className="flex items-center gap-2 text-base font-semibold tracking-tight lg:hidden">
-            <VaultIcon className="h-5 w-5 text-accent" />
+            <span className="brand-mark"><VaultIcon className="h-4 w-4" /></span>
             LegacyLock
           </Link>
           {principal === "owner" && (
@@ -282,12 +295,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        {children}
+        <div id="app-content">{children}</div>
 
         {/* Mobile bottom navigation */}
         {showBottomNav && (
           <nav
-            className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-surface/95 backdrop-blur lg:hidden"
+            className="mobile-nav fixed inset-x-0 bottom-0 z-40 border-t border-border bg-bg lg:hidden"
             aria-label="Primary"
           >
             <div className="grid grid-cols-4">
@@ -299,8 +312,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     key={item.href}
                     href={item.href}
                     className={clsx(
-                      "flex flex-col items-center gap-1 py-2.5 text-[11px] transition-colors",
-                      active ? "font-medium text-text" : "text-faint",
+                      "flex flex-col items-center justify-center gap-1 py-2 text-xs transition-colors",
+                      active ? "font-medium text-text" : "text-muted",
                     )}
                     aria-current={active ? "page" : undefined}
                   >

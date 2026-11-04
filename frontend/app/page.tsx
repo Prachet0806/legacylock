@@ -37,9 +37,13 @@ export default function LoginPage() {
       router.push("/home");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
-      if (e instanceof ApiError && e.status === 403) {
+      if (e instanceof ApiError && e.status === 429) {
+        setErr(e.message);
+      } else if (e instanceof ApiError && e.status === 403 && e.message === "Email not verified") {
         setUnverified(true);
         setErr("Email not verified. Check your inbox for the link.");
+      } else if (e instanceof ApiError && e.status === 403) {
+        setErr(e.message);
       } else {
         setErr("Invalid email or password.");
       }
@@ -55,54 +59,49 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="mx-auto grid min-h-screen w-full max-w-6xl lg:max-w-7xl xl:max-w-full lg:grid-cols-2">
+    <main className="public-auth mx-auto grid min-h-screen w-full lg:grid-cols-[3fr_2fr]">
       {/* Brand panel */}
-      <section className="relative hidden flex-col justify-center items-center text-center overflow-hidden border-r border-border bg-surface p-10 lg:flex">
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -left-24 -top-24 h-72 w-72 rounded-full bg-accent/10 blur-3xl"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -bottom-32 -right-16 h-80 w-80 rounded-full bg-accent/[0.07] blur-3xl"
-        />
-        <div className="relative flex flex-col items-center gap-10 py-12">
-          <div className="relative flex items-center gap-2">
-            <VaultIcon className="h-7 w-7 text-accent" />
-            <span className="text-xl font-semibold tracking-tight">LegacyLock</span>
+      <section className="auth-story relative hidden flex-col justify-center overflow-hidden border-r border-border bg-bg p-12 lg:flex">
+        <div className="relative mx-auto flex w-full max-w-xl flex-col gap-16 py-12">
+          <div className="flex items-center gap-2.5">
+            <span className="brand-mark"><VaultIcon className="h-4 w-4" /></span>
+            <span className="text-lg font-semibold tracking-tight">LegacyLock</span>
           </div>
-          <div className="relative flex flex-col items-center gap-6">
-            <div className="flex flex-col items-center gap-4">
-              <h2 className="max-w-md text-5xl font-bold leading-[1.05] tracking-tight text-balance">
-                Your legacy.<br />Kept private.
+          <div className="flex flex-col gap-8">
+            <div>
+              <p className="eyebrow mb-4">A private archive for what matters</p>
+              <h2 className="max-w-xl text-5xl font-medium leading-[1.08] tracking-tight text-balance">
+                Keep your private messages ready for the people you trust.
               </h2>
-              <div className="h-px w-16 bg-accent/60" aria-hidden="true" />
+              <p className="mt-5 max-w-md text-base leading-7 text-muted">
+                Messages are encrypted in your browser. Recovery shares stay with the people and places you choose.
+              </p>
             </div>
-            <ul className="flex flex-col items-center gap-5 text-base">
-              {["Encrypted locally", "Recovery without trust", "Automatic release"].map((t) => (
+            <ul className="grid max-w-md grid-cols-1 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-1">
+              {["Encrypted in your browser", "Recovery shares held separately", "Release follows your check-in plan"].map((t, i) => (
                 <li key={t} className="flex items-center gap-3 text-muted">
-                  <span className="h-2 w-2 rounded-full bg-accent flex-shrink-0" aria-hidden="true" />
+                  <span className="flex h-6 w-6 items-center justify-center rounded-md border border-border text-xs tabular-nums text-accent">0{i + 1}</span>
                   {t}
                 </li>
               ))}
             </ul>
           </div>
-          <p className="relative flex items-center gap-2 text-sm text-faint">
+          <p className="flex items-center gap-2 border-t border-border pt-5 text-sm text-muted">
             <ShieldCheck className="h-4 w-4 text-success" />
-            Zero-knowledge design — we can&apos;t read your data.
+            Your vault passphrase unlocks your keys in this browser.
           </p>
         </div>
       </section>
 
       {/* Form panel */}
       <section className="flex flex-col justify-center px-4 py-10 sm:px-10">
-        <div className="mx-auto w-full max-w-md">
+        <div className="auth-form-inner mx-auto w-full max-w-sm">
           <div className="mb-6 flex items-center gap-2 lg:hidden">
-            <VaultIcon className="h-6 w-6 text-accent" />
+            <span className="brand-mark"><VaultIcon className="h-4 w-4" /></span>
             <span className="text-lg font-semibold tracking-tight">LegacyLock</span>
           </div>
-          <p className="text-sm text-muted">Welcome back</p>
-          <h1 className="mb-1 mt-1 text-2xl font-semibold tracking-tight">Owner login</h1>
+          <p className="text-sm text-muted">Owner access</p>
+          <h1 className="mb-1 mt-1 text-2xl font-medium tracking-tight">Sign in to your vault</h1>
           <p className="mb-6 text-sm leading-relaxed text-muted">
             Sign in to check your vault status. Your vault passphrase unlocks your keys next.
           </p>
@@ -168,7 +167,8 @@ export default function LoginPage() {
           </form>
           <div className="my-6 flex items-center gap-3 text-xs text-faint" aria-hidden="true">
             <span className="h-px flex-1 bg-border" />
-            🔒 Zero-knowledge design
+            <ShieldCheck className="h-4 w-4" />
+            Encrypted in this browser
             <span className="h-px flex-1 bg-border" />
           </div>
           <p className="text-xs leading-relaxed text-faint">

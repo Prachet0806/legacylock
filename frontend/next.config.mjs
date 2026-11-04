@@ -21,6 +21,7 @@ const securityHeaders = [
 
 const nextConfig = {
   output: "standalone",
+  devIndicators: false,
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

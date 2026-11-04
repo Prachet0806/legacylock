@@ -21,7 +21,6 @@ const DOT: Record<Tone, string> = {
 export function StatusChip({
   tone,
   children,
-  pulse,
   className,
 }: {
   tone: Tone;
@@ -31,7 +30,7 @@ export function StatusChip({
 }) {
   return (
     <span className={clsx("chip", className)}>
-      <span className={clsx("h-2 w-2 rounded-full", DOT[tone], pulse && "motion-safe:animate-pulse")} />
+      <span className={clsx("h-2 w-2 rounded-full", DOT[tone])} />
       {children}
     </span>
   );
@@ -49,7 +48,7 @@ export function Badge({
   return (
     <span
       className={clsx(
-        "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium",
+        "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium",
         tone === "success" && "bg-success/15 text-success",
         tone === "warn" && "bg-warn/15 text-warn",
         tone === "danger" && "bg-danger/15 text-danger",
@@ -75,8 +74,8 @@ export function EmptyState({
   action?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border px-6 py-12 text-center">
-      <div className="mb-1 flex h-11 w-11 items-center justify-center rounded-2xl bg-raised text-faint">{icon}</div>
+    <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-6 py-10 text-center">
+      <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-lg bg-raised text-faint">{icon}</div>
       <p className="font-medium">{title}</p>
       <p className="max-w-sm text-sm leading-relaxed text-muted">{hint}</p>
       {action && <div className="mt-2">{action}</div>}
@@ -149,7 +148,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/85 p-4 backdrop-blur-[2px]"
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -200,7 +199,7 @@ export function Stepper({ steps, current }: { steps: string[]; current: number }
           <span
             className={clsx(
               "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold transition-colors",
-              current > i + 1 ? "bg-success text-black" : current === i + 1 ? "bg-accent text-black" : "bg-raised text-muted",
+              current > i + 1 ? "bg-success text-[rgb(var(--status-ink))]" : current === i + 1 ? "bg-[rgb(var(--gold))] text-[rgb(var(--navy))]" : "bg-raised text-muted",
             )}
           >
             {i + 1}

@@ -10,13 +10,6 @@ import { SecurityChecklist } from "../../components/security";
 import { formatCountdown, stateTone } from "../../components/vault-ui";
 import { StatusChip } from "../../components/ui";
 
-function greeting(): string {
-  const h = new Date().getHours();
-  if (h < 12) return "Good morning";
-  if (h < 18) return "Good afternoon";
-  return "Good evening";
-}
-
 export default function Dashboard() {
   const { notify } = useToast();
   const [status, setStatus] = useState<string | null>(null);
@@ -25,6 +18,7 @@ export default function Dashboard() {
   const [lastCheckin, setLastCheckin] = useState<string | null>(null);
   const [recovery, setRecovery] = useState<Readiness | null>(null);
   const [heartbeatArmed, setHeartbeatArmed] = useState<boolean | null>(null);
+  const [checkinError, setCheckinError] = useState("");
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -54,6 +48,7 @@ export default function Dashboard() {
   }, []);
 
   async function onCheckin() {
+    setCheckinError("");
     try {
       await checkin();
       const [hb, vs] = await Promise.all([getHeartbeat(), getVaultStatus()]);
@@ -61,8 +56,8 @@ export default function Dashboard() {
       setLastCheckin(hb.last_check_in ?? null);
       setStatus(vs.status);
       notify("success", "Checked in — deadline extended.");
-    } catch {
-      notify("error", "Check-in failed. Are you logged in?");
+    } catch (e) {
+      setCheckinError(e instanceof Error ? e.message : "Check-in failed. Please try again.");
     }
   }
 
@@ -71,30 +66,57 @@ export default function Dashboard() {
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 sm:py-10">
-      <p className="text-sm text-muted">{greeting()}</p>
-      <h1 className="page-title mt-1 text-balance">Your legacy is protected.</h1>
+      <div className="page-heading">
+        <div>
+          <p className="eyebrow">Owner overview</p>
+          <h1 className="page-title mt-2 text-balance">Your vault</h1>
+        </div>
+        <p className="supporting max-w-sm">A clear view of your check-in plan, private messages, and recovery readiness.</p>
+      </div>
 
       {/* Hero — heartbeat countdown is the product's heartbeat */}
-      <section className="surface-hero mt-6" aria-label="Vault status">
-        <StatusChip tone={tone} pulse={status === "grace"} className="mx-auto">
-          <span aria-live="polite">● {heroLabel}</span>
-        </StatusChip>
-        <p className="eyebrow mt-6">Next check-in</p>
-        <p className="mt-2 font-mono text-4xl font-bold tabular-nums tracking-tight sm:text-5xl" aria-live="off">
-          {formatCountdown(deadline, now)}
-        </p>
-        <p className="supporting mt-2">until check-in</p>
-        <button type="button" className="btn-primary mt-6 min-w-44" onClick={onCheckin}>
-          <CheckCircle2 className="h-4 w-4" />
-          Check in
-        </button>
-        <p className="mt-4 text-xs text-faint">
-          Last check-in: {lastCheckin ? new Date(lastCheckin).toLocaleString() : "never"}
-        </p>
+      <section className="surface-hero dashboard-deadline" aria-label="Vault status">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="eyebrow">Vault status</p>
+            <p className="mt-2 text-xl font-medium">{status === "triggered" ? "Released to your trusted people" : status === "grace" ? "Check-in needed" : "Your vault is active"}</p>
+          </div>
+          <StatusChip tone={tone} pulse={status === "grace"}>
+            <span aria-live="polite">{heroLabel.toLowerCase()}</span>
+          </StatusChip>
+        </div>
+        <div className="dashboard-deadline-body">
+          <div>
+            <p className="eyebrow">Next check-in</p>
+            <p className="mt-3 font-mono text-4xl font-medium tabular-nums tracking-tight sm:text-5xl" aria-live="off">
+              {formatCountdown(deadline, now)}
+            </p>
+            <p className="supporting mt-2">remaining</p>
+          </div>
+          <div className="flex flex-col items-start gap-3 sm:items-end">
+            <button type="button" className="btn-primary min-w-40" onClick={onCheckin} disabled={status === "triggered"}>
+              <CheckCircle2 className="h-4 w-4" />
+              Check in now
+            </button>
+            <p className="text-xs text-faint">
+              Last check-in: {lastCheckin ? new Date(lastCheckin).toLocaleString() : "Not checked in yet"}
+            </p>
+          </div>
+        </div>
       </section>
 
+      {checkinError && (
+        <section className="surface-lg mt-4 !border-danger/50" role="alert" aria-live="polite">
+          <h2 className="font-semibold text-danger">Check-in could not be completed</h2>
+          <p className="mt-2 text-sm leading-relaxed">{checkinError}</p>
+          {checkinError.toLowerCase().includes("recovery setup") && (
+            <Link className="btn-secondary mt-4" href="/settings/security">Review recovery readiness</Link>
+          )}
+        </section>
+      )}
+
       {/* Stat tiles */}
-      <section className="mt-4 grid gap-3 sm:grid-cols-3" aria-label="Vault summary">
+      <section className="dashboard-stats mt-4 grid gap-3 sm:grid-cols-3" aria-label="Vault summary">
         <Link href="/vault" className="stat-tile transition-colors hover:border-faint">
           <span className="text-3xl font-bold tabular-nums">{counts?.messages ?? "–"}</span>
           <span className="text-sm text-muted">Private notes</span>

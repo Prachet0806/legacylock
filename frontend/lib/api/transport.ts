@@ -9,7 +9,11 @@ import { assertEpoch, currentEpoch, lockVault } from "../crypto-session";
 const API_URL = (process.env.NEXT_PUBLIC_API_URL?.trim() || "/api").replace(/\/$/, "");
 const flights = new Map<string, Promise<void>>();
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); this.name="ApiError"; }
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly retryAfterSeconds: number | null = null,
+  ) { super(message); this.name="ApiError"; }
 }
 let channel: BroadcastChannel | null = null;
 export function sessionChanged(): void {
@@ -42,16 +46,29 @@ export async function parseJson<T>(res: Response, path: string): Promise<T> {
 }
 
 export function errorFor(res: Response): Promise<Error> {
+  const retryAfterHeader = res.headers.get("Retry-After");
+  const retryAfterSeconds = retryAfterHeader && /^\d+$/.test(retryAfterHeader)
+    ? Number(retryAfterHeader)
+    : null;
   return res
     .text()
     .catch(() => "")
     .then((detail) => {
       try {
         const body=JSON.parse(detail);
-        if(typeof body.detail === "string") return new ApiError(res.status, body.detail);
+        if(typeof body.detail === "string") {
+          if (res.status === 429) return new ApiError(res.status, rateLimitMessage(retryAfterSeconds), retryAfterSeconds);
+          return new ApiError(res.status, body.detail, retryAfterSeconds);
+        }
       } catch { /* non-JSON failure gets the status fallback */ }
-      return new ApiError(res.status, `Request failed (${res.status})`);
+      return new ApiError(res.status, res.status === 429 ? rateLimitMessage(retryAfterSeconds) : `Request failed (${res.status})`, retryAfterSeconds);
     });
+}
+
+export function rateLimitMessage(seconds: number | null): string {
+  if (seconds === null) return "Too many requests. Please wait a little and try again.";
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return `Too many requests. Please wait about ${minutes} minute${minutes === 1 ? "" : "s"} and try again.`;
 }
 
 export async function rawFetch(path: string, init: RequestInit = {}): Promise<Response> {
@@ -82,7 +99,10 @@ async function fetchWithRefresh<T>(
         const probe = await rawFetch(refreshPath === "/auth/refresh" ? "/auth/me" : "/access/status");
         if (probe.ok) return;
         const r = await rawFetch(refreshPath, {method:"POST"});
-        if (!r.ok) throw new Error("Sign in again");
+        if (!r.ok) {
+          if (r.status === 429) throw await errorFor(r);
+          throw new Error("Sign in again");
+        }
       };
       flight = (typeof navigator !== "undefined" && navigator.locks
         ? navigator.locks.request(`legacylock:${refreshPath}`, {signal:AbortSignal.timeout(15000)}, refresh)

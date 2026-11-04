@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { AlertTriangle, ArrowRight, CheckCircle2, Siren } from "lucide-react";
 import { clsx } from "clsx";
 import {
@@ -30,6 +31,7 @@ export default function HeartbeatPage() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [checkinError, setCheckinError] = useState("");
   const [now, setNow] = useState(() => Date.now());
 
   async function refresh() {
@@ -59,12 +61,14 @@ export default function HeartbeatPage() {
   }
 
   async function onCheckin() {
+    setCheckinError("");
     try {
       await checkin();
       await refresh();
       notify("success", "Checked in — deadline extended.");
-    } catch {
-      notify("error", "Check-in failed.");
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : "Check-in failed. Please try again.";
+      setCheckinError(detail);
     }
   }
 
@@ -125,6 +129,16 @@ export default function HeartbeatPage() {
           Check in now
         </button>
       </section>
+
+      {checkinError && (
+        <section className="surface-lg mt-4 !border-danger/50" role="alert" aria-live="polite">
+          <h2 className="font-semibold text-danger">Check-in could not be completed</h2>
+          <p className="mt-2 text-sm leading-relaxed">{checkinError}</p>
+          {checkinError.toLowerCase().includes("recovery setup") && (
+            <Link className="btn-secondary mt-4" href="/settings/security">Review recovery readiness</Link>
+          )}
+        </section>
+      )}
 
       {/* State machine */}
       <section className="surface-lg mt-4" aria-label="Release process">

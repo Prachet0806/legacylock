@@ -27,9 +27,6 @@ USER appuser
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=4)"
-
 # Serve only. Migrations run as a one-shot release job BEFORE deploy
 # (see DEPLOY.md) — never from app boot, so replicas can't race.
 # The application validates TRUSTED_PROXIES; Uvicorn must not rewrite the peer first.

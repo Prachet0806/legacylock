@@ -240,6 +240,30 @@ jobs:
             -e ALLOWED_ORIGINS=https://app.legacylock.test \
             -e ALLOWED_HOSTS=backend,localhost,127.0.0.1 \
             legacylock-backend:ci
+          # The worker uses the same image but has no HTTP listener. Prove it
+          # runs without JWT keys and records both functional checkpoints.
+          docker run -d --name worker --network qualification \
+            --mount type=bind,source="$PWD/image-db-tls/postgres.crt",target=/run/secrets/postgres.crt,readonly \
+            -e ENVIRONMENT=production \
+            -e "DATABASE_URL=postgresql+psycopg://legacylock:ci-only@postgres:5432/legacylock?sslmode=verify-full&sslrootcert=/run/secrets/postgres.crt" \
+            -e SESSION_SECRET=ci-image-isolated-configuration-0000000000 \
+            -e AUTH_EPOCH=ci-image-isolated \
+            -e DELIVERY_PAYLOAD_KEY="$PAYLOAD_KEY" \
+            -e RESEND_API_KEY=ci-never-send \
+            -e NOTIFICATION_EMAIL_FROM=noreply@app.legacylock.test \
+            -e DELIVERY_ENABLED=false -e RELEASE_HOLD=true -e BACKGROUND_IN_API=false \
+            -e HEARTBEAT_ENABLED=true -e SMS_ENABLED=false \
+            -e FRONTEND_URL=https://app.legacylock.test \
+            -e ALLOWED_ORIGINS=https://app.legacylock.test \
+            -e ALLOWED_HOSTS=backend,localhost,127.0.0.1 \
+            legacylock-backend:ci python worker.py
+          for i in $(seq 1 30); do
+            checkpoint_count="$(docker exec postgres psql -U legacylock -d legacylock -tAc "SELECT count(*) FROM worker_checkpoint WHERE kind IN ('checker','delivery') AND last_success_at IS NOT NULL AND last_error IS NULL")"
+            if [ "$checkpoint_count" = "2" ]; then break; fi
+            sleep 1
+          done
+          test "$(docker inspect -f '{{.State.Running}}' worker)" = "true"
+          test "$checkpoint_count" = "2"
           docker run -d --name frontend --network qualification -p 3000:3000 legacylock-frontend:ci
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:3000/ > /tmp/index.html; then break; fi

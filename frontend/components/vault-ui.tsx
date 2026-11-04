@@ -25,9 +25,9 @@ export function StateTimeline({ state }: { state: VaultState | string | null }) 
             <span
               className={clsx(
                 "flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold transition-colors",
-                i < idx && "bg-success text-black",
-                i === idx && s === "active" && "bg-success text-black",
-                i === idx && s === "grace" && "motion-safe:animate-pulse bg-warn text-black",
+                i < idx && "bg-success text-[rgb(var(--status-ink))]",
+                i === idx && s === "active" && "bg-success text-[rgb(var(--status-ink))]",
+                i === idx && s === "grace" && "bg-warn text-[rgb(var(--status-ink))]",
                 i === idx && s === "triggered" && "bg-danger text-white",
                 (i > idx || idx === -1) && "border border-border bg-raised text-muted",
               )}
