@@ -25,7 +25,7 @@ export async function freshOwner(request: APIRequestContext, password:string):Pr
  const API=process.env.NEXT_PUBLIC_API_URL??"http://localhost:8000";
  const email=`e2e-${Date.now()}-${Math.random().toString(16).slice(2)}@example.com`;
  const registered=await request.post(`${API}/auth/register`,{data:{email,password,invite_code:process.env.E2E_INVITE_CODE??"test-invite-code-123"}});
- if(!registered.ok())throw new Error(`Registration fixture failed ${registered.status()}`);
+ if(!registered.ok())throw new Error(`Registration fixture failed ${registered.status()}: ${await registered.text()}`);
  const issued=await request.post(`${API}/auth/test-issue-verification`,{data:{email}});
  if(!issued.ok())throw new Error("Verification fixture failed");
  const {link}=await issued.json();
@@ -73,13 +73,28 @@ export async function prepareReleaseEvidence(
   const readinessResponse = await request.get(`${API}/vault/readiness`);
   await requireOk(readinessResponse, "read release readiness");
   const readiness = await readinessResponse.json() as {
+    initialized:boolean; ceremony_status:string; quorum_assigned:boolean;
     material_revision:number; assignment_signature:string; generation:string|null;
+    owner_reported_drill:unknown;
   };
   if (!readiness.generation) throw new Error("Current recovery ceremony generation missing");
+  if (!readiness.initialized || readiness.ceremony_status !== "READY" || !readiness.quorum_assigned) {
+    throw new Error(`Release prerequisites incomplete after fixture setup: ${JSON.stringify(readiness)}`);
+  }
   const drill = await request.post(`${API}/vault/drill`, {data:{
     material_revision:readiness.material_revision,
     assignment_signature:readiness.assignment_signature,
     generation:readiness.generation,
   }});
   await requireOk(drill, "record current owner-reported recovery drill");
+  const finalReadinessResponse = await request.get(`${API}/vault/readiness`);
+  await requireOk(finalReadinessResponse, "verify release readiness after drill");
+  const finalReadiness = await finalReadinessResponse.json() as typeof readiness;
+  if (!finalReadiness.owner_reported_drill) {
+    throw new Error(`Owner drill was not recognized as current evidence: ${JSON.stringify(finalReadiness)}`);
+  }
+  const checkin = await request.post(`${API}/heartbeat/checkin`);
+  if (!checkin.ok()) {
+    throw new Error(`Initial heartbeat check-in failed ${checkin.status()}: ${await checkin.text()}`);
+  }
 }

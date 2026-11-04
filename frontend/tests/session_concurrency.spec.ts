@@ -1,10 +1,10 @@
 import {test, expect} from "@playwright/test";
-import {freshOwner, requireLiveBackend} from "./e2e-guard";
+import {requireLiveBackend} from "./e2e-guard";
 
 test("two expired tabs share one refresh; wrong action password preserves login; logout reaches both tabs", async ({context, request}) => {
   await requireLiveBackend(request,"Session concurrency");
-  const password="Concurrent-owner-test-1234";
-  const email=await freshOwner(request,password);
+  const password=process.env.E2E_OWNER_PASSWORD??"DevPassword123456";
+  const email=process.env.E2E_OWNER_EMAIL??"owner@example.com";
   const origin=process.env.PLAYWRIGHT_BASE_URL??"http://localhost:3000";
   const login=await context.request.post(`${origin}/api/auth/login`,{data:{email,password},headers:{Origin:origin}});
   expect(login.ok()).toBe(true);
