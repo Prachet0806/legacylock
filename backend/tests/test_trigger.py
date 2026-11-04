@@ -1,6 +1,9 @@
 """Tests for /vault/status, /vault/trigger, /vault/reset-status routes."""
 
+from typing import Any, cast
+
 import pytest
+from fastapi.testclient import TestClient
 
 TRIGGER_BODY = {"password": "TestPass123!Long", "confirm": True}
 RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
@@ -9,6 +12,9 @@ RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
 @pytest.fixture(autouse=True)
 def reset_vault_status(client, auth):
     """Always reset vault status to 'active' after each test."""
+    from tests.conftest import prepare_release_ready_vault
+
+    prepare_release_ready_vault()
     yield
     client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
 
@@ -40,6 +46,36 @@ class TestVaultStatus:
 
 
 class TestVaultTrigger:
+    def test_legacy_recovery_blocks_manual_release(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        from db import SessionLocal
+        from models import Vault
+
+        with SessionLocal() as db:
+            vault = db.query(Vault).one()
+            cast(Any, vault).recovery_status = "LEGACY"
+            db.commit()
+        res = client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
+        assert res.status_code == 409
+        assert client.get("/vault/status", headers=auth).json()["status"] == "active"
+
+    def test_uninitialized_vault_blocks_manual_release(
+        self, client: TestClient, auth: dict[str, str]
+    ) -> None:
+        from db import SessionLocal
+        from models import Vault
+
+        with SessionLocal() as db:
+            vault = db.query(Vault).one()
+            typed_vault = cast(Any, vault)
+            typed_vault.wrapped_vmk = None
+            typed_vault.recovery_status = "UNINITIALIZED"
+            db.commit()
+        res = client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
+        assert res.status_code == 409
+        assert client.get("/vault/status", headers=auth).json()["status"] == "active"
+
     def test_trigger_vault(self, client, auth):
         res = client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         assert res.status_code == 200

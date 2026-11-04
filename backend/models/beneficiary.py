@@ -1,6 +1,16 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 
 from db import Base
@@ -15,6 +25,8 @@ class Beneficiary(Base):
     email = Column(String(320), nullable=False)
     phone = Column(String(30), nullable=True)
     share_index = Column(Integer, nullable=True)
+    contact_revision = Column(Integer, nullable=False, default=1, server_default="1")
+    ceremony_generation = Column(String(32), nullable=True)
     invitation_hash = Column(Text, nullable=True, unique=True, index=True)
     invitation_status = Column(String(20), nullable=False, default="pending")
     invitation_sent_at = Column(DateTime(timezone=True), nullable=True)
@@ -24,6 +36,10 @@ class Beneficiary(Base):
     # access session without depending on a still-valid access JWT.
     refresh_hash = Column(Text, nullable=True, unique=True, index=True)
     refresh_expires_at = Column(DateTime(timezone=True), nullable=True)
+    # Server-side session binding: current beneficiary access JWT jti.
+    # Rotated on accept/refresh, cleared on revoke/delete — a stolen or
+    # pre-revoke token fails closed even within its 30-minute TTL.
+    session_jti = Column(String(64), nullable=True, index=True)
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -49,5 +65,13 @@ class Beneficiary(Base):
             unique=True,
             sqlite_where=(share_index.isnot(None)),
             postgresql_where=(share_index.isnot(None)),
+        ),
+        CheckConstraint(
+            "invitation_status IN ('pending','sent','accepted','expired')",
+            name="ck_beneficiary_invite_status",
+        ),
+        CheckConstraint(
+            "share_index IS NULL OR (share_index >= 1 AND share_index <= 255)",
+            name="ck_beneficiary_share_range",
         ),
     )

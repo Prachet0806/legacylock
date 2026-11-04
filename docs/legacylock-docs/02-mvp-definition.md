@@ -101,23 +101,23 @@ A single owner can:
 
 ## Definition of Done
 
-- [ ] Plaintext never sent to backend
-- [ ] Owner vault password never sent to backend
-- [ ] VMK never sent to backend
-- [ ] Raw shares never sent by LegacyLock
-- [ ] Three encrypted messages work
-- [ ] Message CRUD works
-- [ ] 2-of-3 recovery works
-- [ ] Heartbeat works
-- [ ] Grace period works
-- [ ] Automatic trigger works
-- [ ] Manual trigger works
-- [ ] Trigger is idempotent
-- [ ] Beneficiary access works
-- [ ] Local reconstruction works
-- [ ] Local decryption works
-- [ ] Sensitive request bodies are not logged
-- [ ] Production build and backend tests pass
+- [x] Plaintext never sent to backend (`zero_knowledge_network_boundary.spec.ts` boundary assertion)
+- [x] Owner vault password never sent to backend (same assertion; login password only to auth endpoints)
+- [x] VMK never sent to backend (same assertion; wrapped VMK only)
+- [x] Raw shares never sent by LegacyLock (same assertion; `LLS1-` shares local-only)
+- [x] Three encrypted messages work (golden path creates + recovers 3)
+- [x] Message CRUD works (backend `test_vault.py` + E2E create/read/decrypt)
+- [x] 2-of-3 recovery works (golden path, default ceremony)
+- [x] Heartbeat works (`test_heartbeat*.py`, heartbeat UI schedule save/check-in)
+- [x] Grace period works (`heartbeat_auto_trigger.spec.ts`: ACTIVE → GRACE, check-in cancels)
+- [x] Automatic trigger works (`heartbeat_auto_trigger.spec.ts` + `test_heartbeat_run_check.py`, reason=inactivity)
+- [x] Manual trigger works (golden path `/heartbeat` danger zone)
+- [x] Trigger is idempotent (`test_trigger.py` concurrency + auto re-run no-op)
+- [x] Beneficiary access works (invite accept → TRIGGERED-gated status/messages)
+- [x] Local reconstruction works (exact-k + generation binding, `crypto.spec.ts` 14/14)
+- [x] Local decryption works (both E2E specs decrypt to matching plaintext)
+- [x] Sensitive request bodies are not logged (`09-api-design.md` allowlist + boundary assertions)
+- [x] Production build and backend tests pass (`next build`, 155 pytest, 28 Playwright)
 
 ## Owner Unlock Acceptance Criteria
 

@@ -11,6 +11,7 @@ export {
   getHeartbeat,
   getMe,
   getMessage,
+  getRecoveryPolicy,
   getStats,
   getVaultStatus,
   inviteBeneficiary,
@@ -20,14 +21,20 @@ export {
   logout,
   manualTrigger,
   nextDeadline,
+  postRecoveryCeremony,
+  finalizeCeremony,
+  cancelCeremony,
   putCryptoMaterial,
   putHeartbeat,
+  putRecoveryPolicy,
+  runHeartbeatCheck,
   wipeVault,
   type Beneficiary,
   type CryptoMaterial,
   type HeartbeatConfig,
   type MessageDetail,
   type MessageMeta,
+  type RecoveryPolicy,
   type Stats,
   type VaultStatus,
 } from "./api/owner";
@@ -37,14 +44,12 @@ export {
   getInviteStatus,
   getRecoveryMessage,
   listRecoveryMessages,
+  revokeBeneficiarySession,
   type RecoveryMessageDetail,
   type RecoveryMessageMeta,
 } from "./api/beneficiary";
 export type { MeOut } from "./api/owner";
 
-// --- categories (plumbing only; advisor UI deferred) ---
-// Mirrors backend models/message.py MessageCategory — keep in sync
-// (covered by backend test_message_category_contract).
 export const MESSAGE_CATEGORIES = [
   "financial",
   "insurance",

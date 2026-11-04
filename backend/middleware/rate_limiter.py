@@ -5,6 +5,7 @@ multiply by worker count. Sufficient for the MVP single-worker deployment;
 a shared store (Redis) is required before scaling horizontally.
 """
 
+import logging
 import os
 import time
 from collections import defaultdict
@@ -16,14 +17,22 @@ from starlette.responses import JSONResponse, Response
 
 from config import get_settings
 
+logger = logging.getLogger("legacylock.rate_limiter")
+
 # Stricter buckets for sensitive routes: (per-minute, per-hour).
 # NOTE: matching is prefix-based but each entry below names a FULL route
 # prefix deliberately — do not collapse these to "/auth" or "/access",
 # which would merge unrelated buckets.
 _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
     "/auth/login": (5, 60),
+    "/auth/register": (3, 20),
+    "/auth/verify-email": (10, 100),
+    "/auth/resend-verification": (3, 20),
     "/auth/refresh": (10, 120),
     "/access/invite": (10, 100),
+    "/access/invitation/accept": (10, 100),
+    "/access/login/request": (3, 20),
+    "/access/login/redeem": (10, 100),
     "/access/session": (10, 100),
     "/access/status": (30, 300),
     "/access/messages": (30, 300),
@@ -31,6 +40,7 @@ _ROUTE_LIMITS: dict[str, tuple[int, int]] = {
     "/vault/trigger": (5, 30),
     "/vault/reset-status": (5, 30),
 }
+_DYNAMIC_ROUTE_PREFIXES = {"/access/invite", "/access/messages", "/beneficiaries"}
 
 
 class RateLimiterMiddleware(BaseHTTPMiddleware):
@@ -51,16 +61,9 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         self.hour_buckets: dict[str, list[float]] = defaultdict(list)
 
     def _get_client_ip(self, request: Request) -> str:
-        # Only trust X-Forwarded-For when request comes from a configured trusted proxy.
-        try:
-            trusted = get_settings().trusted_proxy_list()
-        except Exception:
-            trusted = []
-        client_host = request.client.host if request.client else "unknown"
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded and client_host in trusted:
-            return forwarded.split(",")[0].strip()
-        return client_host
+        from services.proxy import client_ip
+
+        return client_ip(request)
 
     def _limits_for(self, path: str) -> tuple[tuple[int, int], str]:
         """Return (limits, bucket_key_prefix) for a path.
@@ -69,8 +72,18 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         segment), so e.g. /access/session and /access/status — which share the
         "access" segment but have different limits — get independent buckets.
         """
+        parts = path.strip("/").split("/")
+        if (
+            len(parts) == 3
+            and parts[0] == "beneficiaries"
+            and parts[1].isdecimal()
+            and parts[2] == "invite"
+        ):
+            return (10, 100), "/beneficiaries/{id}/invite"
         for prefix, limits in _ROUTE_LIMITS.items():
-            if path.startswith(prefix):
+            if path == prefix or (
+                prefix in _DYNAMIC_ROUTE_PREFIXES and path.startswith(prefix + "/")
+            ):
                 return limits, prefix
         segment = path.split("/")[1] if len(path.split("/")) > 1 else ""
         return (self.requests_per_minute, self.requests_per_hour), f"/{segment}"
@@ -98,24 +111,23 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
 
         # Skip rate limiting in test environment
         try:
-            from config import get_settings
-
             if get_settings().environment == "test" and os.environ.get("RATE_LIMIT_TESTING") != "1":
                 return await call_next(request)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Could not read environment for rate-limit test bypass; enforcing limits: %s",
+                type(exc).__name__,
+            )
 
         client_ip = self._get_client_ip(request)
         (per_min, per_hour), bucket_prefix = self._limits_for(request.url.path)
         key_min = f"{client_ip}:{bucket_prefix}"
         now = time.time()
 
-        # Clean up old entries
         self._cleanup_old_entries(self.minute_buckets[key_min], 60)
         self._cleanup_old_entries(self.hour_buckets[key_min], 3600)
         self._evict_if_needed()
 
-        # Check minute limit
         if len(self.minute_buckets[key_min]) >= per_min:
             return JSONResponse(
                 status_code=429,
@@ -123,7 +135,6 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": "60"},
             )
 
-        # Check hour limit
         if len(self.hour_buckets[key_min]) >= per_hour:
             return JSONResponse(
                 status_code=429,

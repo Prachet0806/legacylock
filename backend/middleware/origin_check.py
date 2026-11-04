@@ -1,61 +1,57 @@
-"""Origin check middleware — CSRF defense for cookie-authed mutations.
+"""Exact origin CSRF validation; request Host never grants authority."""
 
-Browsers always send Origin (fetch) or Referer (navigation/form) on
-state-changing requests. If either is present, its host must match the
-configured ALLOWED_ORIGINS or the request's own host; otherwise 403.
-
-Requests with neither header (curl, mobile apps, same-origin navigations
-without Referer) pass through — API clients are unaffected. This pairs with
-SameSite=Lax cookies: Lax already blocks cross-site POST cookies, this
-covers the remaining cases (e.g. top-level navigations, lax-allowed GETs
-with side effects — of which this API has none, defense in depth).
-"""
-
-from collections.abc import Awaitable, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 
 from config import get_settings
 
-_UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 
-
-def _allowed_hosts() -> set[str]:
+def canonical(value):
     try:
-        origins = [
-            o.strip().rstrip("/") for o in get_settings().allowed_origins.split(",") if o.strip()
-        ]
-    except Exception:
-        origins = []
-    hosts = set()
-    for o in origins:
-        try:
-            hosts.add(urlparse(o).netloc.lower())
-        except Exception:
-            continue
-    return hosts
+        url = urlsplit(value)
+        if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password:
+            return None
+        return (
+            url.scheme,
+            url.hostname.lower(),
+            url.port or (443 if url.scheme == "https" else 80),
+        )
+    except ValueError:
+        return None
 
 
 class OriginCheckMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        if request.method not in _UNSAFE:
+    async def dispatch(self, request, call_next):
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
             return await call_next(request)
-        origin = request.headers.get("origin") or request.headers.get("referer")
-        if not origin:
-            return await call_next(request)
-        try:
-            host = urlparse(origin).netloc.lower()
-        except Exception:
-            return await call_next(request)
-        if not host:
-            return await call_next(request)
-        allowed = _allowed_hosts()
-        req_host = (request.headers.get("host") or "").split(",")[0].strip().lower()
-        if host in allowed or (req_host and host == req_host):
-            return await call_next(request)
-        return JSONResponse(status_code=403, content={"detail": "Origin not allowed"})
+        settings = get_settings()
+        origin = request.headers.get("origin")
+        referer = request.headers.get("referer")
+        source = origin if origin is not None else referer
+        if source is not None:
+            allowed = {canonical(o.strip()) for o in settings.allowed_origins.split(",")}
+            allowed.discard(None)
+            if canonical(source) not in allowed or (
+                origin is not None and urlsplit(origin).path not in ("", "/")
+            ):
+                return JSONResponse({"detail": "Origin not allowed"}, status_code=403)
+        elif settings.environment == "production" and not request.headers.get(
+            "authorization", ""
+        ).startswith("Bearer "):
+            cookies = any(
+                request.cookies.get(name)
+                for name in [
+                    settings.session_cookie_name_owner,
+                    settings.session_cookie_name_owner_refresh,
+                    settings.session_cookie_name_beneficiary,
+                    settings.session_cookie_name_beneficiary_refresh,
+                ]
+            )
+            bootstrap = request.url.path.startswith(
+                ("/auth/login", "/auth/register", "/access/login", "/access/invitation")
+            )
+            if cookies or bootstrap:
+                return JSONResponse({"detail": "Browser origin required"}, status_code=403)
+        return await call_next(request)

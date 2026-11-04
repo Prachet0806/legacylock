@@ -5,13 +5,15 @@ RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
 
 
 def _invite_link(client, auth):
-    post = client.post("/beneficiaries", json={"name": "Ben", "email": "ben@test.com"}, headers=auth)
+    post = client.post(
+        "/beneficiaries", json={"name": "Ben", "email": "ben@test.com"}, headers=auth
+    )
     assert post.status_code == 201
     ben_id = post.json()["id"]
     r = client.post(f"/beneficiaries/{ben_id}/invite", headers=auth)
     assert r.status_code == 200
     link = r.json()["invitation_link"]
-    return link.rsplit("/", 1)[-1]
+    return link.split("token=", 1)[-1]
 
 
 def _beneficiary_headers(client, auth):
@@ -26,7 +28,7 @@ def _beneficiary_headers(client, auth):
 
     client.cookies.clear()
     raw = _invite_link(client, auth)
-    r = client.post(f"/access/invite/{raw}/accept")
+    r = client.post("/access/invitation/accept", json={"token": raw})
     assert r.status_code == 200
     assert "access_token" not in r.json()
     ben_id = r.json()["beneficiary_id"]
@@ -35,11 +37,15 @@ def _beneficiary_headers(client, auth):
         b = db.query(Beneficiary).filter(Beneficiary.id == ben_id).first()
         assert b is not None
         vault_id = b.vault_id
+        bound_jti = b.session_jti
     finally:
         db.close()
     token = create_access_token(
-        ben_id, vault_id, role="beneficiary",
+        ben_id,
+        vault_id,
+        role="beneficiary",
         expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+        jti=bound_jti,
     )
     client.cookies.clear()
     return {"Authorization": f"Bearer {token}"}
@@ -49,6 +55,7 @@ class TestInviteFlow:
     def test_invite_stores_hash_not_raw(self, client, auth):
         from db import SessionLocal
         from models import Beneficiary
+
         raw = _invite_link(client, auth)
         db = SessionLocal()
         try:
@@ -63,22 +70,22 @@ class TestInviteFlow:
     def test_accept_and_replay(self, client, auth):
         client.cookies.clear()
         raw = _invite_link(client, auth)
-        assert client.get(f"/access/invite/{raw}/status").status_code == 200
-        r = client.post(f"/access/invite/{raw}/accept")
+        assert client.post("/access/invitation/status", json={"token": raw}).status_code == 200
+        r = client.post("/access/invitation/accept", json={"token": raw})
         assert r.status_code == 200
         assert "access_token" not in r.json()
         # HttpOnly session + refresh cookies set, nothing in the body
         assert "legacylock_beneficiary_session" in client.cookies
         assert "legacylock_beneficiary_refresh" in client.cookies
         # rotated: replay same link is now invalid
-        r2 = client.post(f"/access/invite/{raw}/accept")
+        r2 = client.post("/access/invitation/accept", json={"token": raw})
         assert r2.status_code in (404, 409)
         client.cookies.clear()
 
     def test_session_refresh_flow(self, client, auth):
         client.cookies.clear()
         raw = _invite_link(client, auth)
-        client.post(f"/access/invite/{raw}/accept")
+        client.post("/access/invitation/accept", json={"token": raw})
         old_refresh = client.cookies.get("legacylock_beneficiary_refresh")
         assert old_refresh
         # No JWT needed: the refresh cookie alone renews the session
@@ -90,14 +97,19 @@ class TestInviteFlow:
         client.cookies.clear()
         client.cookies.set("legacylock_beneficiary_refresh", old_refresh, path="/access")
         r2 = client.post("/access/session")
-        assert r2.status_code == 401
+        assert r2.status_code == 409
+        client.cookies.clear()
         # No credential at all
         assert client.post("/access/session").status_code == 401
         client.cookies.clear()
 
     def test_status_gated_by_trigger(self, client, auth):
         bh = _beneficiary_headers(client, auth)
-        assert client.get("/access/status", headers=bh).status_code == 403
+        from services.auth import decode_access_token
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault(decode_access_token(auth["Authorization"].split()[1])["vault_id"])
+        assert client.get("/access/status", headers=bh).json()["vault_status"] == "active"
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
             r = client.get("/access/status", headers=bh)
@@ -120,9 +132,7 @@ class TestShareRemoved:
         # Abuse protection now lives in strict per-route buckets.
         monkeypatch.setenv("RATE_LIMIT_TESTING", "1")
         bh = _beneficiary_headers(client, auth)
-        statuses = {
-            client.post("/access/session", headers=bh).status_code for _ in range(15)
-        }
+        statuses = {client.post("/access/session", headers=bh).status_code for _ in range(15)}
         assert 429 in statuses
 
 
@@ -140,11 +150,18 @@ class TestShareAssignments:
 class TestRecoveryMessages:
     def _setup(self, client, auth):
         import base64
-        wmek = base64.b64encode(b"0" * 32).decode()
+
+        wmek = base64.b64encode(b"0" * 40).decode()
         ct = base64.b64encode(b"x" * 16).decode()
         mid = client.post(
             "/vault/messages",
-            json={"label": "will", "ciphertext": ct, "wrapped_mek": wmek},
+            json={
+                "label": "will",
+                "ciphertext": ct,
+                "material_revision": 1,
+                "wrapped_mek": wmek,
+                "crypto_metadata": {"iv": base64.b64encode(b"i" * 12).decode()},
+            },
             headers=auth,
         ).json()["id"]
         return mid, _beneficiary_headers(client, auth)
@@ -156,6 +173,10 @@ class TestRecoveryMessages:
 
     def test_list_and_get_after_trigger(self, client, auth):
         mid, bh = self._setup(client, auth)
+        from services.auth import decode_access_token
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault(decode_access_token(auth["Authorization"].split()[1])["vault_id"])
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
             rows = client.get("/access/messages", headers=bh).json()
@@ -170,10 +191,15 @@ class TestRecoveryMessages:
         finally:
             client.post("/vault/reset-status", json=RESET_BODY, headers=auth)
 
+
 class TestAuditPersisted:
     def test_trigger_writes_audit_row(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         from db import SessionLocal
         from models import AuditEvent
+
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         try:
             db = SessionLocal()

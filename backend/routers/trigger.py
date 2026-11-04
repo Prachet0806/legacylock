@@ -22,15 +22,12 @@ router = APIRouter(
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _get_vault(db: Session, current_user: User) -> Vault:
     """Get vault scoped to current user."""
     vault = (
-        db.query(Vault).filter(Vault.user_id == current_user.id, Vault.is_primary == True).first()
+        db.query(Vault)
+        .filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True))
+        .first()
     )
     if not vault:
         raise HTTPException(status_code=404, detail="Vault not found")
@@ -55,16 +52,15 @@ def _get_or_create_vault_status(db: Session, vault_id: int) -> VaultStatus:
     return vs
 
 
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
-
-
 class VaultStatusOut(BaseModel):
     status: str
     grace_started_at: str | None
     triggered_at: str | None
     updated_at: str
+    recovery_threshold: int = 2
+    recovery_total: int = 3
+    release_hold: bool = False
+    armed: bool = False
 
 
 class TriggerRequest(BaseModel):
@@ -91,11 +87,6 @@ class ResetStatusRequest(BaseModel):
     confirm: Literal[True]
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
 @router.get("/status", response_model=VaultStatusOut)
 def get_status(current_user: User = Depends(require_owner), db: Session = Depends(get_db)):
     vault = _get_vault(db, current_user)
@@ -105,6 +96,10 @@ def get_status(current_user: User = Depends(require_owner), db: Session = Depend
         grace_started_at=vs.grace_started_at.isoformat() if vs.grace_started_at else None,
         triggered_at=vs.triggered_at.isoformat() if vs.triggered_at else None,
         updated_at=vs.updated_at.isoformat() if vs.updated_at else "",
+        recovery_threshold=int(getattr(vault, "recovery_threshold", None) or 2),
+        recovery_total=int(getattr(vault, "recovery_total", None) or 3),
+        release_hold=get_settings().release_hold,
+        armed=bool(vs.armed),
     )
 
 
@@ -118,14 +113,8 @@ def trigger_vault_route(
         raise HTTPException(status_code=401, detail="Invalid password")
 
     vault = _get_vault(db, current_user)
-    vs, already = _trigger_vault(db, vault.id, reason="manual")
-    record_audit(
-        db,
-        vault.id,
-        "owner",
-        current_user.id,
-        "vault.trigger",
-        {"reason": "manual", "already": already},
+    vs, already = _trigger_vault(
+        db, vault.id, reason="manual", actor_type="owner", actor_id=current_user.id
     )
     db.commit()
 
@@ -168,7 +157,9 @@ def reset_status(
         },
         synchronize_session="fetch",
     )
-    db.commit()
+    from services.outbox import cancel_warnings
+
+    cancel_warnings(db, vault.id)
     record_audit(db, vault.id, "owner", current_user.id, "vault.reset", {})
     db.commit()
     return {"message": "Vault status reset to active."}

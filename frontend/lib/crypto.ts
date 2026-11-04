@@ -76,6 +76,9 @@ export async function deriveKEK(
   salt_b64: string,
   iterations: number = KDF_ITERATIONS,
 ): Promise<CryptoKey> {
+  if (!Number.isInteger(iterations) || iterations < 100_000 || iterations > 2_000_000 || b64decode(salt_b64).length !== SALT_LENGTH) {
+    throw new Error("Invalid or unsupported vault derivation metadata");
+  }
   const enc = new TextEncoder();
   const base = await crypto.subtle.importKey("raw", enc.encode(passphrase), "PBKDF2", false, [
     "deriveKey",
@@ -115,6 +118,7 @@ export async function wrapVMK(vmkRaw: Uint8Array, kek: CryptoKey): Promise<strin
 }
 
 export async function unwrapVMK(wrappedVmkB64: string, kek: CryptoKey): Promise<Uint8Array> {
+  if (b64decode(wrappedVmkB64).length !== 40) throw new Error("Invalid wrapped vault key length");
   const unwrapped = await crypto.subtle.unwrapKey(
     "raw",
     b64decode(wrappedVmkB64),
@@ -152,6 +156,9 @@ export async function unlockVMK(
   passphrase: string,
   material: WrappedVmkMaterial,
 ): Promise<Uint8Array> {
+  if (material.vmk_crypto_version !== CRYPTO_VERSION || material.vmk_kdf_algorithm !== KDF_ALGORITHM || b64decode(material.wrapped_vmk_b64).length !== 40) {
+    throw new Error("Invalid or unsupported wrapped vault material");
+  }
   const kek = await deriveKEK(
     passphrase,
     material.vmk_kdf_salt_b64,
@@ -212,6 +219,9 @@ export async function decryptMessage(
 ): Promise<string> {
   if (payload.v !== CRYPTO_VERSION || payload.algo !== "AES-256-GCM") {
     throw new Error("Unsupported crypto version/algorithm");
+  }
+  if (b64decode(payload.wrapped_mek_b64).length !== 40 || b64decode(payload.iv_b64).length !== IV_LENGTH || b64decode(payload.ciphertext_b64).length < 16) {
+    throw new Error("Invalid encrypted message envelope");
   }
   const vmkKey = await importVmkForWrap(vmkRaw);
   const mekKey = await crypto.subtle.unwrapKey(

@@ -15,6 +15,8 @@ class AuditEvent(Base):
     actor_id = Column(Integer, nullable=False)
     event_type = Column(String(50), nullable=False)
     event_metadata = Column(Text, nullable=True)
+    request_id = Column(String(32), nullable=True, index=True)
+    ip_address = Column(String(64), nullable=True)
     timestamp = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

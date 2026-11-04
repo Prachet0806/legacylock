@@ -2,12 +2,18 @@
 
 import base64
 
-_WMEK = base64.b64encode(b"0" * 32).decode()
+_WMEK = base64.b64encode(b"0" * 40).decode()
 _CT = base64.b64encode(b"x" * 16).decode()
 
 
 def _msg(label="t", **kw):
-    body = {"label": label, "ciphertext": _CT, "wrapped_mek": _WMEK}
+    body = {
+        "label": label,
+        "ciphertext": _CT,
+        "material_revision": 1,
+        "wrapped_mek": _WMEK,
+        "crypto_metadata": {"iv": base64.b64encode(b"i" * 12).decode()},
+    }
     body.update(kw)
     return body
 
@@ -28,7 +34,11 @@ class TestMetadataCaps:
         assert r.status_code == 422
 
     def test_small_metadata_accepted(self, client, auth):
-        r = client.post("/vault/messages", json=_msg(crypto_metadata={"iv": "eA=="}), headers=auth)
+        r = client.post(
+            "/vault/messages",
+            json=_msg(crypto_metadata={"iv": base64.b64encode(b"i" * 12).decode()}),
+            headers=auth,
+        )
         assert r.status_code == 201
 
     def test_kdf_contract_exact_and_capped(self, client, auth):
@@ -36,6 +46,7 @@ class TestMetadataCaps:
 
         good = {
             "wrapped_vmk": _WMEK,
+            "expected_revision": 1,
             "vmk_crypto_version": 1,
             "vmk_kdf_algorithm": "PBKDF2-SHA256",
             "vmk_kdf_salt": base64.b64encode(b"s" * 16).decode(),
@@ -50,6 +61,7 @@ class TestMetadataCaps:
         )
         body = {
             "wrapped_vmk": _WMEK,
+            "expected_revision": 1,
             "vmk_crypto_version": 1,
             "vmk_kdf_algorithm": "PBKDF2-SHA256",
             "vmk_kdf_salt": base64.b64encode(b"s" * 16).decode(),

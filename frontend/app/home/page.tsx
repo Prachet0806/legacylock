@@ -2,44 +2,24 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import {
-  ArrowRight,
-  HeartPulse,
-  KeyRound,
-  ShieldCheck,
-  Timer,
-  Users,
-  Vault as VaultIcon,
-} from "lucide-react";
-import { getStats } from "../../lib/client";
+import { ArrowRight, CheckCircle2, Vault as VaultIcon } from "lucide-react";
+import { checkin, getHeartbeat, getStats, getVaultStatus, nextDeadline } from "../../lib/client";
+import { getReadiness, type Readiness } from "../../lib/api/owner";
+import { useToast } from "../../components/toast";
+import { SecurityChecklist } from "../../components/security";
+import { formatCountdown, stateTone } from "../../components/vault-ui";
 import { StatusChip } from "../../components/ui";
 
-const STEPS = [
-  {
-    icon: KeyRound,
-    title: "Encrypt",
-    hint: "Messages are encrypted in your browser with AES-256-GCM. The server only ever sees ciphertext.",
-  },
-  {
-    icon: Timer,
-    title: "Check in",
-    hint: "Confirm you're around on your own schedule. Missed check-ins move the vault toward release.",
-  },
-  {
-    icon: HeartPulse,
-    title: "Release",
-    hint: "After the grace period, the vault transitions to TRIGGERED — automatically and idempotently.",
-  },
-  {
-    icon: Users,
-    title: "Recover",
-    hint: "Beneficiaries combine 2 of 3 Shamir shares to reconstruct the key and decrypt — locally.",
-  },
-];
-
 export default function Dashboard() {
+  const { notify } = useToast();
   const [status, setStatus] = useState<string | null>(null);
   const [counts, setCounts] = useState<{ messages: number; beneficiaries: number } | null>(null);
+  const [deadline, setDeadline] = useState<string | null>(null);
+  const [lastCheckin, setLastCheckin] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<Readiness | null>(null);
+  const [heartbeatArmed, setHeartbeatArmed] = useState<boolean | null>(null);
+  const [checkinError, setCheckinError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     (async () => {
@@ -50,76 +30,143 @@ export default function Dashboard() {
       } catch {
         /* logged out — landing content still renders */
       }
+      try {
+        const hb = await getHeartbeat();
+        setDeadline(nextDeadline(hb));
+        setLastCheckin(hb.last_check_in ?? null);
+        setHeartbeatArmed(hb.armed);
+      } catch {
+        /* heartbeat may not exist yet */
+      }
+      try { setRecovery(await getReadiness()); } catch { /* recovery status stays unknown */ }
     })();
   }, []);
 
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function onCheckin() {
+    setCheckinError("");
+    try {
+      await checkin();
+      const [hb, vs] = await Promise.all([getHeartbeat(), getVaultStatus()]);
+      setDeadline(nextDeadline(hb));
+      setLastCheckin(hb.last_check_in ?? null);
+      setStatus(vs.status);
+      notify("success", "Checked in — deadline extended.");
+    } catch (e) {
+      setCheckinError(e instanceof Error ? e.message : "Check-in failed. Please try again.");
+    }
+  }
+
+  const tone = stateTone(status);
+  const heroLabel = status === "triggered" ? "RELEASED" : status === "grace" ? "GRACE PERIOD" : "ACTIVE";
+
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10">
-      {/* Hero */}
-      <section className="flex flex-col items-start gap-4 py-8">
-        <div className="flex items-center gap-2">
-          <VaultIcon className="h-8 w-8 text-accent" />
-          {status && (
-            <StatusChip tone={status === "triggered" ? "danger" : status === "grace" ? "warn" : "success"}>
-              {status.toUpperCase()}
-            </StatusChip>
-          )}
-        </div>
-        <h1 className="max-w-2xl text-4xl font-bold leading-tight">
-          Your legacy, sealed with <span className="text-accent">zero knowledge</span>.
-        </h1>
-        <p className="max-w-xl text-muted">
-          LegacyLock stores your sensitive messages encrypted and releases them to your
-          beneficiaries only after prolonged inactivity. The server can never read your data —
-          not your messages, not your keys, not your shares.
-        </p>
-        <div className="flex gap-3">
-          <Link href="/vault/setup" className="btn-primary">
-            Set up your vault
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-          <Link href="/vault" className="btn-ghost">
-            Open vault
-          </Link>
-        </div>
-        {counts && (
-          <div className="mt-2 flex gap-2">
-            <span className="chip">{counts.messages} messages</span>
-            <span className="chip">{counts.beneficiaries} beneficiaries</span>
-          </div>
-        )}
-      </section>
-
-      {/* How it works */}
-      <section className="grid gap-4 py-8 sm:grid-cols-2 lg:grid-cols-4">
-        {STEPS.map((s, i) => {
-          const Icon = s.icon;
-          return (
-            <div key={s.title} className="card flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <span className="flex h-8 w-8 items-center justify-center rounded-md bg-raised">
-                  <Icon className="h-4 w-4 text-accent" />
-                </span>
-                <span className="text-xs text-faint">Step {i + 1}</span>
-              </div>
-              <h2 className="font-semibold">{s.title}</h2>
-              <p className="text-sm text-muted">{s.hint}</p>
-            </div>
-          );
-        })}
-      </section>
-
-      {/* Security strip */}
-      <section className="card flex flex-col gap-3 sm:flex-row sm:items-center">
-        <ShieldCheck className="h-8 w-8 shrink-0 text-success" />
+    <main className="mx-auto max-w-5xl px-4 py-8 sm:py-10">
+      <div className="page-heading">
         <div>
-          <h2 className="font-semibold">Server-blind by design</h2>
-          <p className="text-sm text-muted">
-            AES-256-GCM message encryption, PBKDF2 key wrapping, and Shamir 2-of-3 recovery —
-            all computed in your browser via WebCrypto. Plaintext, passphrases, and raw shares
-            are never transmitted or logged.
-          </p>
+          <p className="eyebrow">Owner overview</p>
+          <h1 className="page-title mt-2 text-balance">Your vault</h1>
         </div>
+        <p className="supporting max-w-sm">A clear view of your check-in plan, private messages, and recovery readiness.</p>
+      </div>
+
+      {/* Hero — heartbeat countdown is the product's heartbeat */}
+      <section className="surface-hero dashboard-deadline" aria-label="Vault status">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="eyebrow">Vault status</p>
+            <p className="mt-2 text-xl font-medium">{status === "triggered" ? "Released to your trusted people" : status === "grace" ? "Check-in needed" : "Your vault is active"}</p>
+          </div>
+          <StatusChip tone={tone} pulse={status === "grace"}>
+            <span aria-live="polite">{heroLabel.toLowerCase()}</span>
+          </StatusChip>
+        </div>
+        <div className="dashboard-deadline-body">
+          <div>
+            <p className="eyebrow">Next check-in</p>
+            <p className="mt-3 font-mono text-4xl font-medium tabular-nums tracking-tight sm:text-5xl" aria-live="off">
+              {formatCountdown(deadline, now)}
+            </p>
+            <p className="supporting mt-2">remaining</p>
+          </div>
+          <div className="flex flex-col items-start gap-3 sm:items-end">
+            <button type="button" className="btn-primary min-w-40" onClick={onCheckin} disabled={status === "triggered"}>
+              <CheckCircle2 className="h-4 w-4" />
+              Check in now
+            </button>
+            <p className="text-xs text-faint">
+              Last check-in: {lastCheckin ? new Date(lastCheckin).toLocaleString() : "Not checked in yet"}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {checkinError && (
+        <section className="surface-lg mt-4 !border-danger/50" role="alert" aria-live="polite">
+          <h2 className="font-semibold text-danger">Check-in could not be completed</h2>
+          <p className="mt-2 text-sm leading-relaxed">{checkinError}</p>
+          {checkinError.toLowerCase().includes("recovery setup") && (
+            <Link className="btn-secondary mt-4" href="/settings/security">Review recovery readiness</Link>
+          )}
+        </section>
+      )}
+
+      {/* Stat tiles */}
+      <section className="dashboard-stats mt-4 grid gap-3 sm:grid-cols-3" aria-label="Vault summary">
+        <Link href="/vault" className="stat-tile transition-colors hover:border-faint">
+          <span className="text-3xl font-bold tabular-nums">{counts?.messages ?? "–"}</span>
+          <span className="text-sm text-muted">Private notes</span>
+        </Link>
+        <Link href="/beneficiaries" className="stat-tile transition-colors hover:border-faint">
+          <span className="text-3xl font-bold tabular-nums">{counts?.beneficiaries ?? "–"}</span>
+          <span className="text-sm text-muted">Trusted people</span>
+        </Link>
+        <Link href="/beneficiaries" className="stat-tile transition-colors hover:border-faint">
+          <span className="text-3xl font-bold tabular-nums">
+            {recovery ? `${recovery.eligible_assignments} / ${recovery.total}` : "–"}
+          </span>
+          <span className="text-sm text-muted">Recovery shares</span>
+        </Link>
+      </section>
+
+      {/* Protection checklist — human layer only */}
+      <section className="surface-lg mt-4">
+        <div className="flex items-center gap-2">
+          <VaultIcon className="h-4 w-4 text-accent" />
+          <h2 className="font-semibold">Your protection</h2>
+        </div>
+        <div className="mt-4">
+          <SecurityChecklist
+            items={[
+              { label: "Messages encrypted locally", ok: true },
+              {
+                label: recovery === null
+                  ? "Recovery status not checked"
+                  : "Recovery ready for release (owner-reported)",
+                ok: !!recovery?.initialized
+                  && recovery.ceremony_status === "READY"
+                  && recovery.quorum_assigned
+                  && recovery.owner_reported_drill !== null,
+              },
+              {
+                label: counts ? `${counts.beneficiaries} ${counts.beneficiaries === 1 ? "trusted person" : "trusted people"} assigned` : "Trusted people assigned",
+                ok: (counts?.beneficiaries ?? 0) > 0,
+              },
+              {
+                label: heartbeatArmed === null ? "Heartbeat status not checked" : "Heartbeat armed",
+                ok: heartbeatArmed === true,
+              },
+            ]}
+          />
+        </div>
+        <Link href="/settings/security" className="mt-4 inline-flex items-center gap-1 text-sm text-muted hover:text-text">
+          How your privacy works
+          <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
       </section>
     </main>
   );

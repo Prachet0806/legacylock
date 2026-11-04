@@ -104,11 +104,12 @@
 
 ---
 
-## ADR-014 — Same Valid Share Submission Is Idempotent
+## ADR-014 — [SUPERSEDED] Same Valid Share Submission Is Idempotent
 
-**Decision:** Re-submitting the same valid share is a no-op.
-
-**Reason:** Avoid accidental beneficiary self-lockout while maintaining rate limits for invalid submissions.
+**Status:** SUPERSEDED — `POST /access/share` removed (410). Recovery reconstructs
+locally; the server never sees shares (not even hashes), so idempotent
+share submission is meaningless. Abuse protection is strict rate limiting on
+session/status/message retrieval plus a client-side failed-attempt lockout.
 
 ---
 

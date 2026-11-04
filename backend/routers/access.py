@@ -11,8 +11,8 @@ import json
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from config import get_settings
@@ -20,9 +20,6 @@ from deps import get_db, require_beneficiary, require_owner
 from models import Beneficiary, User, Vault, VaultMessage, VaultStatus
 from services.audit import record_audit
 from services.auth import (
-    BENEFICIARY_REFRESH_DAYS,
-    BENEFICIARY_TOKEN_EXPIRE_MINUTES,
-    create_access_token,
     hash_token,
 )
 
@@ -53,7 +50,7 @@ def _get_vault(db: Session, current_user: User | Beneficiary | None = None) -> V
         if vault_id is None and isinstance(current_user, User):
             vault = (
                 db.query(Vault)
-                .filter(Vault.user_id == current_user.id, Vault.is_primary == True)
+                .filter(Vault.user_id == current_user.id, Vault.is_primary.is_(True))
                 .first()
             )
             if vault:
@@ -75,29 +72,6 @@ def _find_by_invite(db: Session, raw_token: str) -> Beneficiary | None:
     )
 
 
-def _queue_email(to: str, subject: str, body: str) -> None:
-    """Best-effort in-process email dispatch (no fire-and-forget crash)."""
-    try:
-        import asyncio
-
-        from services.notifications import send_email
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None:
-            loop.create_task(send_email(to, subject, body))
-        else:
-            # No running loop (tests/CLI): run inline, swallow errors
-            try:
-                asyncio.run(send_email(to, subject, body))
-            except RuntimeError:
-                pass
-    except Exception:
-        pass
-
-
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -107,6 +81,17 @@ class InvitationAccept(BaseModel):
     """Beneficiary accepts invitation."""
 
     pass
+
+
+class InvitationCredential(BaseModel):
+    token: str = Field(..., min_length=20, max_length=256)
+
+
+@public_router.post("/invitation/accept")
+def accept_fragment_invitation(
+    data: InvitationCredential, response: Response, db: Session = Depends(get_db)
+):
+    return accept_invitation(data.token, response, db)
 
 
 class InvitationAcceptOut(BaseModel):
@@ -121,6 +106,11 @@ class AccessStatusOut(BaseModel):
     vault_status: str
     vault_name: str
     share_index: int | None
+    recovery_threshold: int = 2
+    recovery_total: int = 3
+    recovery_generation: str | None = None
+    beneficiary_id: int
+    material_revision: int
     # No has_encrypted_share - backend doesn't store shares
 
 
@@ -147,7 +137,6 @@ class ShareAssignmentOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@public_router.post("/invite/{invitation_hash}/accept", response_model=InvitationAcceptOut)
 def accept_invitation(invitation_hash: str, response: Response, db: Session = Depends(get_db)):
     """Beneficiary accepts invitation via email link (one-time, rotates hash)."""
     beneficiary = _find_by_invite(db, invitation_hash)
@@ -155,6 +144,20 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
     if not beneficiary:
         # Generic to avoid enumeration oracle
         raise HTTPException(status_code=404, detail="Invalid or expired invitation")
+
+    # All recipient mutations use vault -> recipient -> credential lock order.
+    from services.trigger_service import lock_status
+
+    lock_status(db, beneficiary.vault_id)
+    beneficiary = (
+        db.query(Beneficiary)
+        .filter_by(id=beneficiary.id)
+        .populate_existing()
+        .with_for_update()
+        .one()
+    )
+    if beneficiary.invitation_hash != hash_token(invitation_hash):
+        raise HTTPException(404, "Invalid or expired invitation")
 
     if beneficiary.invitation_status == "accepted":
         raise HTTPException(status_code=409, detail="Invitation already accepted")
@@ -172,52 +175,57 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
             expiry = sent + timedelta(days=7)
         if now > expiry:
             beneficiary.invitation_status = "expired"
+            record_audit(
+                db, beneficiary.vault_id, "beneficiary", beneficiary.id, "invitation.expired", {}
+            )
             db.commit()
             raise HTTPException(status_code=410, detail="Invitation has expired")
 
-    # Mark invitation as accepted and rotate hash so link cannot be replayed
-    beneficiary.invitation_status = "accepted"
-    beneficiary.invitation_accepted_at = datetime.now(UTC)
-    beneficiary.invitation_hash = hash_token(secrets.token_urlsafe(32))
-    db.commit()
+    # Atomic single-use transition: concurrent accepts must not both succeed.
+    # The conditional UPDATE only flips pending->accepted; rowcount 0 means
+    # another request won the race (or status changed) — re-read for the
+    # correct error.
+    from models import Beneficiary as _Ben
 
-    # Create beneficiary-scoped access token (explicit role, 30-minute life)
+    now = datetime.now(UTC)
+    flipped = (
+        db.query(_Ben)
+        .filter(
+            _Ben.id == beneficiary.id,
+            _Ben.invitation_status == "sent",
+            _Ben.invitation_hash == hash_token(invitation_hash),
+            _Ben.contact_revision == beneficiary.contact_revision,
+        )
+        .update(
+            {
+                _Ben.invitation_status: "accepted",
+                _Ben.invitation_accepted_at: now,
+                _Ben.invitation_hash: hash_token(secrets.token_urlsafe(32)),
+            },
+            synchronize_session=False,
+        )
+    )
+    db.flush()
+    if not flipped:
+        db.refresh(beneficiary)
+        if beneficiary.invitation_status == "accepted":
+            raise HTTPException(status_code=409, detail="Invitation already accepted")
+        raise HTTPException(status_code=404, detail="Invalid or expired invitation")
+    db.refresh(beneficiary)
+
+    from services.sessions import issue
+
     vault = _get_vault(db, beneficiary)
-    access_token = create_access_token(
-        beneficiary.id,
-        vault.id,
-        role="beneficiary",
-        expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
+    access_token, raw_refresh = issue(
+        db, "beneficiary", beneficiary.id, vault.id, beneficiary.contact_revision
     )
     record_audit(db, vault.id, "beneficiary", beneficiary.id, "invite.accept", {})
     db.commit()
-    # Issue a single-use refresh credential (hash stored, raw in cookie only)
-    raw_refresh = secrets.token_urlsafe(32)
-    beneficiary.refresh_hash = hash_token(raw_refresh)
-    beneficiary.refresh_expires_at = datetime.now(UTC) + timedelta(days=BENEFICIARY_REFRESH_DAYS)
-    db.commit()
 
     # Cookies carry both tokens; JSON carries none.
-    settings = get_settings()
-    secure = settings.environment == "production"
-    response.set_cookie(
-        key=settings.session_cookie_name_beneficiary,
-        value=access_token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=30 * 60,
-        path="/",
-    )
-    response.set_cookie(
-        key=settings.session_cookie_name_beneficiary_refresh,
-        value=raw_refresh,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=7 * 24 * 60 * 60,
-        path="/access",
-    )
+    from services.cookies import set_beneficiary_session
+
+    set_beneficiary_session(response, access_token, raw_refresh)
 
     return InvitationAcceptOut(
         message="Invitation accepted. You can now access the vault.",
@@ -225,10 +233,10 @@ def accept_invitation(invitation_hash: str, response: Response, db: Session = De
     )
 
 
-@public_router.get("/invite/{invitation_hash}/status")
-def check_invitation_status(invitation_hash: str, db: Session = Depends(get_db)):
+@public_router.post("/invitation/status")
+def check_invitation_status(data: InvitationCredential, db: Session = Depends(get_db)):
     """Check invitation status without accepting (minimal disclosure)."""
-    beneficiary = _find_by_invite(db, invitation_hash)
+    beneficiary = _find_by_invite(db, data.token)
 
     if not beneficiary:
         raise HTTPException(status_code=404, detail="Invalid invitation")
@@ -266,56 +274,75 @@ def create_beneficiary_session(
     raw_refresh = request.cookies.get(get_settings().session_cookie_name_beneficiary_refresh)
     if not raw_refresh:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    beneficiary = (
-        db.query(Beneficiary).filter(Beneficiary.refresh_hash == hash_token(raw_refresh)).first()
-    )
-    if not beneficiary or beneficiary.invitation_status != "accepted":
-        raise HTTPException(status_code=401, detail="Invalid or expired session")
-    exp = beneficiary.refresh_expires_at
-    if exp is not None:
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=UTC)
-        if datetime.now(UTC) > exp:
-            raise HTTPException(status_code=401, detail="Invalid or expired session")
+    from services.sessions import rotate
 
-    vault = _get_vault(db, beneficiary)
-    access_token = create_access_token(
-        beneficiary.id,
-        vault.id,
-        role="beneficiary",
-        expires_minutes=BENEFICIARY_TOKEN_EXPIRE_MINUTES,
-    )
-    # Rotate: old refresh dies with this use.
-    new_raw = secrets.token_urlsafe(32)
-    beneficiary.refresh_hash = hash_token(new_raw)
-    beneficiary.refresh_expires_at = datetime.now(UTC) + timedelta(days=BENEFICIARY_REFRESH_DAYS)
+    family, (access_token, new_raw) = rotate(db, raw_refresh, "beneficiary")
+    beneficiary = db.get(Beneficiary, family.principal_id)
     db.commit()
 
-    settings = get_settings()
-    secure = settings.environment == "production"
-    response.set_cookie(
-        key=settings.session_cookie_name_beneficiary,
-        value=access_token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=30 * 60,
-        path="/",
-    )
-    response.set_cookie(
-        key=settings.session_cookie_name_beneficiary_refresh,
-        value=new_raw,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=7 * 24 * 60 * 60,
-        path="/access",
-    )
+    from services.cookies import set_beneficiary_session
+
+    set_beneficiary_session(response, access_token, new_raw)
 
     return SessionCreateOut(
         message="Session created",
         beneficiary_id=beneficiary.id,
     )
+
+
+@router.post("/revoke")
+def revoke_beneficiary_session(
+    request: Request,
+    response: Response,
+    current_beneficiary: Beneficiary = Depends(require_beneficiary),
+    db: Session = Depends(get_db),
+):
+    """Revoke the calling beneficiary session (clears jti + refresh, clears cookies)."""
+    from services.sessions import revoke_cookie
+
+    revoke_cookie(
+        db,
+        request.cookies.get(get_settings().session_cookie_name_beneficiary_refresh),
+        "beneficiary",
+    )
+    from services.cookies import clear_beneficiary_session
+
+    clear_beneficiary_session(response)
+    record_audit(
+        db,
+        current_beneficiary.vault_id,
+        "beneficiary",
+        current_beneficiary.id,
+        "session.revoke",
+        {},
+    )
+    db.commit()
+    return {"message": "Session revoked"}
+
+
+@router.post("/revoke-all")
+def revoke_all_beneficiary_sessions(
+    response: Response,
+    current_beneficiary: Beneficiary = Depends(require_beneficiary),
+    db: Session = Depends(get_db),
+):
+    from services.cookies import clear_beneficiary_session
+    from services.sessions import revoke_beneficiary
+    from services.trigger_service import lock_status
+
+    lock_status(db, current_beneficiary.vault_id)
+    revoke_beneficiary(db, current_beneficiary)
+    record_audit(
+        db,
+        current_beneficiary.vault_id,
+        "beneficiary",
+        current_beneficiary.id,
+        "session.revoke_all",
+        {},
+    )
+    db.commit()
+    clear_beneficiary_session(response)
+    return {"message": "All beneficiary sessions revoked"}
 
 
 # ---------------------------------------------------------------------------
@@ -333,14 +360,15 @@ def get_access_status(
     vs = db.query(VaultStatus).filter(VaultStatus.vault_id == vault.id).first()
     vault_state = vs.state if vs else "active"
 
-    # Gate: only allow status access if vault is triggered
-    if vault_state != "triggered":
-        raise HTTPException(status_code=403, detail="Vault not triggered")
-
     return AccessStatusOut(
         vault_status=vault_state,
         vault_name=vault.name,
         share_index=current_beneficiary.share_index,
+        recovery_threshold=int(getattr(vault, "recovery_threshold", None) or 2),
+        recovery_total=int(getattr(vault, "recovery_total", None) or 3),
+        recovery_generation=getattr(vault, "recovery_generation", None),
+        beneficiary_id=current_beneficiary.id,
+        material_revision=vault.material_revision,
     )
 
 
@@ -382,6 +410,8 @@ def _require_triggered(db: Session, vault_id: int) -> None:
 
 @router.get("/messages", response_model=list[RecoveryMessageMeta])
 def list_recovery_messages(
+    before_id: int | None = Query(None, ge=1),
+    limit: int = Query(50, ge=1, le=100),
     current_beneficiary: Beneficiary = Depends(require_beneficiary),
     db: Session = Depends(get_db),
 ):
@@ -393,9 +423,13 @@ def list_recovery_messages(
     vault = _get_vault(db, current_beneficiary)
     _require_triggered(db, vault.id)
     rows = (
-        db.query(VaultMessage)
+        db.query(
+            VaultMessage.id, VaultMessage.label, VaultMessage.category, VaultMessage.created_at
+        )
         .filter(VaultMessage.vault_id == vault.id)
-        .order_by(VaultMessage.created_at.desc())
+        .filter(VaultMessage.id < before_id if before_id else True)
+        .order_by(VaultMessage.id.desc())
+        .limit(limit)
         .all()
     )
     return [

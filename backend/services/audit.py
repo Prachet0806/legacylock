@@ -1,8 +1,7 @@
-"""Audit service — persist AuditEvent rows + stdout log (metadata only, never secrets)."""
+"""Stage durable AuditEvent rows in the caller's transaction; never emit secrets."""
 
 from sqlalchemy.orm import Session
 
-from logging_config import log_audit
 from models import AuditEvent
 
 
@@ -40,6 +39,8 @@ def record_audit(
             safe_meta[k] = "[REDACTED]"
     import json
 
+    from services.request_ctx import current_client_ip, current_request_id
+
     db.add(
         AuditEvent(
             vault_id=vault_id,
@@ -47,10 +48,10 @@ def record_audit(
             actor_id=actor_id,
             event_type=event_type,
             event_metadata=json.dumps(safe_meta) if safe_meta else None,
+            request_id=current_request_id(),
+            ip_address=current_client_ip(),
         )
     )
     db.flush()
-    try:
-        log_audit(event_type, actor_type, actor_id, vault_id, **safe_meta)
-    except Exception:
-        pass
+    # The database transaction is authoritative. Avoid pre-commit stdout
+    # claims that could survive a rollback.

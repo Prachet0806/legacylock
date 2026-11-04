@@ -34,12 +34,14 @@ class TestHeartbeatConfig:
         assert data["interval_days"] == 90
         assert data["grace_days"] == 7
 
-    def test_checkin_sets_timestamp(self, client, auth):
+    def test_checkin_sets_timestamp(self, client, release_ready):
+        auth = release_ready
         res = client.post("/heartbeat/checkin", headers=auth)
         assert res.status_code == 200
         assert res.json()["last_check_in"] is not None
 
-    def test_checkin_updates_timestamp(self, client, auth):
+    def test_checkin_updates_timestamp(self, client, release_ready):
+        auth = release_ready
         r1 = client.post("/heartbeat/checkin", headers=auth).json()["last_check_in"]
         import time
 
@@ -47,7 +49,8 @@ class TestHeartbeatConfig:
         r2 = client.post("/heartbeat/checkin", headers=auth).json()["last_check_in"]
         assert r2 >= r1
 
-    def test_last_checkin_reflected_in_get(self, client, auth):
+    def test_last_checkin_reflected_in_get(self, client, release_ready):
+        auth = release_ready
         client.post("/heartbeat/checkin", headers=auth)
         data = client.get("/heartbeat", headers=auth).json()
         assert data["last_check_in"] is not None

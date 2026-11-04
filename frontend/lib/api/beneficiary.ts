@@ -1,18 +1,25 @@
 // Beneficiary-session API wrappers — cookie-only, never owner refresh.
-import { beneficiaryFetch, publicFetch } from "./transport";
+import { beneficiaryFetch, publicFetch, sessionChanged } from "./transport";
 
-export const acceptInvite = (hash: string) =>
-  publicFetch<{ beneficiary_id: number }>(`/access/invite/${hash}/accept`, {
-    method: "POST",
-  });
+export const acceptInvite = (hash: string) => {
+  sessionChanged();
+  return publicFetch<{ beneficiary_id: number }>("/access/invitation/accept", {method:"POST",body:JSON.stringify({token:hash})}).finally(sessionChanged);
+};
 export const getInviteStatus = (hash: string) =>
   publicFetch<{ invitation_status: string; is_expired: boolean }>(
-    `/access/invite/${hash}/status`,
+    "/access/invitation/status", {method:"POST",body:JSON.stringify({token:hash})},
   );
 export const getAccessStatus = () =>
-  beneficiaryFetch<{ vault_status: string; vault_name: string; share_index: number | null }>(
-    "/access/status",
-  );
+  beneficiaryFetch<{
+    beneficiary_id: number;
+  material_revision: number;
+  vault_status: string;
+    vault_name: string;
+    share_index: number | null;
+    recovery_threshold: number;
+    recovery_total: number;
+    recovery_generation?: string | null;
+  }>("/access/status");
 export interface RecoveryMessageMeta {
   id: number;
   label: string;
@@ -30,7 +37,12 @@ export interface RecoveryMessageDetail {
   category: string | null;
   created_at: string;
 }
-export const listRecoveryMessages = () =>
-  beneficiaryFetch<RecoveryMessageMeta[]>("/access/messages");
+export const listRecoveryMessages = (beforeId?:number) =>
+  beneficiaryFetch<RecoveryMessageMeta[]>(`/access/messages?limit=50${beforeId?`&before_id=${beforeId}`:""}`);
 export const getRecoveryMessage = (id: number) =>
   beneficiaryFetch<RecoveryMessageDetail>(`/access/messages/${id}`);
+export const revokeBeneficiarySession = async () => {
+  sessionChanged();
+  try { return await beneficiaryFetch<{ message: string }>("/access/revoke", { method: "POST" }); }
+  finally { sessionChanged(); }
+};

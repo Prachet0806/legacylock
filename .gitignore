@@ -87,3 +87,5 @@ pip-wheel-metadata/
 # JWT signing keys (dev-only, never commit — CI generates throwaways)
 #######################################
 backend/keys/*.pem
+.local-test-pg/
+.restore-rehearsal/

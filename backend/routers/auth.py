@@ -1,7 +1,10 @@
-"""Authentication routes — login, logout, token refresh, current user."""
+"""Authentication routes — register, verify, login, logout, token refresh, me."""
+
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import get_settings
@@ -9,18 +12,16 @@ from deps import get_db, require_owner
 from models import User, Vault
 from services.audit import record_audit
 from services.auth import (
-    RefreshReuseError,
-    create_access_token,
-    create_refresh_token,
-    revoke_refresh_token_family,
-    rotate_refresh_token,
+    hash_password,
     verify_password,
-    verify_refresh_token,
 )
 
 # Argon2id hash of a dummy secret. Verified (and discarded) on unknown-email
 # logins so existent vs non-existent accounts take the same time.
-_DUMMY_HASH = "$argon2id$v=19$m=65536,t=3,p=4$lVyi01Da0+4qcgurGVRIjQ$aDX//0PsB+UKqM5W/ZRGk1tB5lldLeBGf0OHvtdw2dI"
+_DUMMY_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$lVyi01Da0+4qcgurGVRIjQ$"
+    "aDX//0PsB+UKqM5W/ZRGk1tB5lldLeBGf0OHvtdw2dI"
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -46,6 +47,25 @@ class UserResponse(BaseModel):
     id: int
     email: str
     created_at: str
+    email_verified: bool = False
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=12, max_length=256)
+    invite_code: str = Field(..., min_length=8, max_length=256)
+
+
+class RegisterResponse(BaseModel):
+    message: str = "If eligible, a verification email has been sent"
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(..., min_length=10, max_length=256)
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
 
 
 def _is_production() -> bool:
@@ -55,41 +75,152 @@ def _is_production() -> bool:
 def set_auth_cookies(
     response: Response, access_token: str, refresh_token: str, secure: bool = False
 ) -> None:
-    """Set HttpOnly cookies for access and refresh tokens (Option A: refresh cookie-only)."""
-    settings = get_settings()
-    response.set_cookie(
-        key=settings.session_cookie_name_owner,
-        value=access_token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=15 * 60,  # 15 minutes
-        path="/",
-    )
-    response.set_cookie(
-        key=settings.session_cookie_name_owner_refresh,
-        value=refresh_token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=30 * 24 * 60 * 60,  # 30 days
-        path="/auth",
-    )
+    """Set HttpOnly cookies for access and refresh tokens (Option A: refresh cookie-only).
+
+    Delegates to services.cookies (single source of truth); the legacy
+    `secure` arg is ignored in favor of environment-derived flags.
+    """
+    from services.cookies import set_owner_session
+
+    set_owner_session(response, access_token, refresh_token)
 
 
 def clear_auth_cookies(response: Response, secure: bool = False) -> None:
     """Clear auth cookies on logout (flags must match set_cookie)."""
+    from services.cookies import clear_owner_session
+
+    clear_owner_session(response)
+
+
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+async def register(
+    data: RegisterRequest,
+    db: Session = Depends(get_db),
+) -> RegisterResponse:
+    """Gated self-service registration (B-spec) + Resend verification.
+
+    Fail-closed when REGISTRATION_INVITE_CODE is empty. Invite is checked
+    first (constant-time) so outsiders learn nothing about email existence.
+    Always returns the same 201 message — enumeration-safe for new, existing
+    unverified (re-send), and existing verified (no-op) cases.
+    """
+    from services.email_verification import VerificationCooldown, issue_verification
+
     settings = get_settings()
-    response.delete_cookie(
-        settings.session_cookie_name_owner, path="/", secure=secure, httponly=True, samesite="lax"
-    )
-    response.delete_cookie(
-        settings.session_cookie_name_owner_refresh,
-        path="/auth",
-        secure=secure,
-        httponly=True,
-        samesite="lax",
-    )
+    expected = settings.registration_invite_code or ""
+    if not expected.strip() or not secrets.compare_digest(data.invite_code, expected):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid invitation",
+        )
+
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).with_for_update().first()
+    if user is None:
+        import asyncio
+
+        user = User(
+            email=email, password_hash=await asyncio.to_thread(hash_password, data.password)
+        )
+        try:
+            with db.begin_nested():
+                db.add(user)
+                db.flush()
+                db.add(
+                    Vault(
+                        user_id=user.id,
+                        name="Primary Vault",
+                        is_primary=True,
+                        recovery_status="UNINITIALIZED",
+                    )
+                )
+                db.flush()
+        except IntegrityError:
+            user = db.query(User).filter(User.email == email).with_for_update().one()
+        else:
+            record_audit(db, None, "owner", user.id, "auth.register", {})
+    if user.email_verified_at is None:
+        from contextlib import suppress
+
+        with suppress(VerificationCooldown):
+            await issue_verification(db, user, enforce_cooldown=True)
+    db.commit()
+    return RegisterResponse()
+
+
+@router.post("/verify-email")
+def verify_email(
+    data: VerifyEmailRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Redeem a single-use verification token (generic error, no oracle)."""
+    from services.email_verification import consume_verification
+
+    user = consume_verification(db, data.token)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired link")
+    return {"message": "Email verified"}
+
+
+class TestIssueVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post("/test-issue-verification")
+async def test_issue_verification(
+    data: TestIssueVerificationRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """E2E-only: issue a verification link and return it (no mailbox in tests).
+
+    Test environment only (404 in development and production). Mirrors the
+    backend test helper that captures the emailed link — the raw token is
+    otherwise unrecoverable (hash-only).
+    """
+    from services.email_verification import issue_verification, verification_link
+
+    if get_settings().environment != "test":
+        raise HTTPException(status_code=404, detail="Not found")
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if user is None or user.email_verified_at is not None:
+        raise HTTPException(status_code=404, detail="No unverified account for this email")
+    # No cooldown here: this IS the test mailbox, not the public resend path.
+    raw = await issue_verification(db, user)
+    db.commit()
+    return {"link": verification_link(raw)}
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    data: ResendVerificationRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Re-send verification link. Always 200 — response-level enumeration resistant.
+
+    Per-email 5-minute cooldown supplements IP rate limits (VerificationCooldown
+    maps to the same generic success so the cooldown itself is not an oracle).
+    """
+    import logging
+
+    from services.email_verification import VerificationCooldown, issue_verification
+
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if user is not None and user.email_verified_at is None:
+        try:
+            await issue_verification(db, user, enforce_cooldown=True)
+            db.commit()
+        except VerificationCooldown:
+            # Keep the generic response while releasing the row lock acquired
+            # before the cooldown check; do not reveal account activity.
+            db.rollback()
+        except Exception as exc:
+            db.rollback()
+            logging.getLogger("legacylock.auth").error(  # noqa: TRY400 - omit sensitive DB URL
+                "Verification resend could not be queued: %s", type(exc).__name__
+            )
+    return {"message": "If the account needs verification, an email has been sent"}
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -99,7 +230,8 @@ def login(
     db: Session = Depends(get_db),
 ) -> LoginResponse:
     """Authenticate user. Refresh token is cookie-only (never in JSON)."""
-    user = db.query(User).filter(User.email == data.email).first()
+    email = str(data.email).strip().lower()
+    user = db.query(User).filter(User.email == email).first()
     if user is None:
         # Constant-time: burn the same Argon2id cost as a real check.
         verify_password(data.password, _DUMMY_HASH)
@@ -112,13 +244,25 @@ def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
+    if user.email_verified_at is None:
+        record_audit(db, None, "owner", user.id, "auth.login_blocked_unverified", {})
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified",
+        )
 
     # Authentication has no domain side effects: vault provisioning happens
     # explicitly at setup (PUT /vault/crypto-material), not here.
-    vault = db.query(Vault).filter(Vault.user_id == user.id, Vault.is_primary == True).first()
+    vault = (
+        db.query(Vault)
+        .filter(Vault.user_id == user.id, Vault.is_primary.is_(True))
+        .first()
+    )
 
-    access_token = create_access_token(user.id, vault.id if vault else None, role="owner")
-    refresh_token, _ = create_refresh_token(user.id, vault.id if vault else None, db)
+    from services.sessions import issue
+
+    access_token, refresh_token = issue(db, "owner", user.id, vault.id if vault else None)
 
     secure = _is_production()
     set_auth_cookies(response, access_token, refresh_token, secure)
@@ -139,29 +283,15 @@ def logout(
     Mass-revoke requires possession of the refresh cookie itself: a stolen
     short-lived access token alone must not be able to nuke all sessions.
     """
-    secure = _is_production()
-    revoked = False
-    # Canonical path: refresh token from HttpOnly cookie (Option A)
-    raw_refresh = request.cookies.get(get_settings().session_cookie_name_owner_refresh)
-    if raw_refresh:
-        try:
-            rt = verify_refresh_token(raw_refresh, db)
-        except RefreshReuseError as exc:
-            try:
-                revoke_refresh_token_family(str(exc.args[0]) if exc.args else "", db)
-            except Exception:
-                pass
-            rt = None
-        if rt:
-            try:
-                revoke_refresh_token_family(rt.family_id, db)
-                revoked = True
-                record_audit(db, rt.vault_id, "owner", rt.user_id, "auth.logout", {})
-                db.commit()
-            except Exception:
-                db.rollback()
+    from services.sessions import revoke_cookie
 
-    clear_auth_cookies(response, secure)
+    family = revoke_cookie(
+        db, request.cookies.get(get_settings().session_cookie_name_owner_refresh), "owner"
+    )
+    if family:
+        record_audit(db, family.vault_id, "owner", family.principal_id, "auth.logout", {})
+    db.commit()
+    clear_auth_cookies(response)
     return {"message": "Logged out successfully"}
 
 
@@ -178,35 +308,12 @@ def refresh(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
-    try:
-        rt = verify_refresh_token(raw, db)
-    except RefreshReuseError as exc:
-        # Possible theft: revoke entire family
-        try:
-            revoke_refresh_token_family(str(exc.args[0]) if exc.args else "", db)
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token",
-        )
-    if not rt:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token",
-        )
+    from services.sessions import rotate
 
-    # Rotate refresh token
-    new_rt = rotate_refresh_token(rt, db)
-
-    # Resolve the primary vault (may be absent pre-setup — session stays valid)
-    vault = db.query(Vault).filter(Vault.user_id == rt.user_id, Vault.is_primary == True).first()
-
-    access_token = create_access_token(rt.user_id, vault.id if vault else None, role="owner")
-
-    secure = _is_production()
-    set_auth_cookies(response, access_token, new_rt, secure)
-
+    family, (access, new_raw) = rotate(db, raw, "owner")
+    record_audit(db, family.vault_id, "owner", family.principal_id, "auth.refresh", {})
+    db.commit()
+    set_auth_cookies(response, access, new_raw)
     return RefreshResponse()
 
 
@@ -217,4 +324,5 @@ def me(user: User = Depends(require_owner)) -> UserResponse:
         id=user.id,
         email=user.email,
         created_at=user.created_at.isoformat() if user.created_at else "",
+        email_verified=user.email_verified_at is not None,
     )

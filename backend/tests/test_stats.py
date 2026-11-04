@@ -2,7 +2,7 @@
 
 import base64
 
-_WMEK = base64.b64encode(b"0" * 32).decode()
+_WMEK = base64.b64encode(b"0" * 40).decode()
 WIPE_BODY = {"password": "TestPass123!Long", "confirm": True}
 TRIGGER_BODY = {"password": "TestPass123!Long", "confirm": True}
 RESET_BODY = {"password": "TestPass123!Long", "confirm": True}
@@ -47,7 +47,9 @@ class TestStats:
             json={
                 "label": "test",
                 "ciphertext": base64.b64encode(b"x" * 16).decode(),
+                "material_revision": 1,
                 "wrapped_mek": _WMEK,
+                "crypto_metadata": {"iv": base64.b64encode(b"i" * 12).decode()},
             },
             headers=auth,
         )
@@ -69,6 +71,9 @@ class TestStats:
         assert data["vault_status"] == "active"
 
     def test_vault_status_reflects_trigger(self, client, auth):
+        from tests.conftest import prepare_release_ready_vault
+
+        prepare_release_ready_vault()
         client.post("/vault/trigger", json=TRIGGER_BODY, headers=auth)
         data = client.get("/stats", headers=auth).json()
         assert data["vault_status"] == "triggered"

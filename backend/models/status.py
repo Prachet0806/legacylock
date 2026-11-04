@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from db import Base
@@ -13,6 +13,8 @@ class VaultStatus(Base):
     vault_id = Column(Integer, ForeignKey("vault.id"), nullable=False, index=True, unique=True)
     state = Column(String(20), nullable=False, default="active")
     version = Column(Integer, nullable=False, default=1)
+    armed = Column(Boolean, nullable=False, default=False, server_default="false")
+    episode = Column(Integer, nullable=False, default=0, server_default="0")
     # Recovery policy is a versioned crypto constant (Shamir 2-of-3 for v1),
     # not per-row data — see frontend Shamir + KDF_CONTRACTS.
     grace_started_at = Column(DateTime(timezone=True), nullable=True)
