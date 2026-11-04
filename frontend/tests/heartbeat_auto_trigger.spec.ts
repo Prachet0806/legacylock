@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { requireLiveBackend, requireOk, freshOwner } from "./e2e-guard";
+import { requireLiveBackend, requireOk, freshOwner, prepareReleaseEvidence } from "./e2e-guard";
 
 // Automatic dead-man-switch path: owner configures heartbeat -> simulated
 // inactivity (non-prod run-check time travel) drives ACTIVE -> GRACE ->
@@ -95,9 +95,6 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
   await page.getByLabel("Grace period (days)").fill("7");
   await page.getByRole("button", { name: "Save schedule" }).click();
   await expect(page.getByRole("button",{name:"Edit schedule",exact:true})).toBeVisible();
-  await page.getByRole("button", { name: "Check in now" }).click();
-  await expect(page.getByText("ACTIVE").first()).toBeVisible({ timeout: 15000 });
-
   // --- Owner: add + invite beneficiary BEFORE the trigger ---
   await page.goto("/beneficiaries");
   await page.getByRole("button",{name:"Add person",exact:true}).click();
@@ -111,6 +108,10 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
   await expect(linkEl).toBeVisible();
   const link = (await linkEl.textContent())?.trim() ?? "";
   expect(link).toContain("/access/invite#");
+  await prepareReleaseEvidence(request, BEN_EMAIL, 2);
+  await page.goto("/heartbeat");
+  await page.getByRole("button", { name: "Check in now" }).click();
+  await expect(page.getByText("ACTIVE").first()).toBeVisible({ timeout: 15000 });
 
   // --- Time travel +31d: ACTIVE -> GRACE ---
   const grace = await request.post(`${API}/heartbeat/run-check`, {

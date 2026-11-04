@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { requireLiveBackend, requireOk, freshOwner } from "./e2e-guard";
+import { requireLiveBackend, requireOk, freshOwner, prepareReleaseEvidence } from "./e2e-guard";
 
 // Generalized k-of-n proof: 3-of-5 setup through the UI, then recovery with a
 // NON-prefix subset (shares 3,4,5) — the first configuration where the
@@ -84,6 +84,7 @@ test("3-of-5: setup -> non-prefix subset recovery -> decrypt", async ({
   await row.getByRole("button", { name: "Invite" }).click();
   const link = ((await page.locator("code", { hasText: "/access/invite#" }).textContent())?.trim() ?? "");
   expect(link).toContain("/access/invite#");
+  await prepareReleaseEvidence(request, BEN_EMAIL, 3);
 
   await page.goto("/heartbeat");
   await page.getByRole("button", { name: /trigger vault/i }).click();

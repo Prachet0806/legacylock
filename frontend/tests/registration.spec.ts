@@ -24,18 +24,16 @@ test("register -> verify -> login; wrong code rejected; pre-verify login blocked
   // --- Negative: wrong invite code ---
   await page.goto("/register");
   await page.getByLabel("Email").fill(EMAIL);
-  await page.getByLabel("Password (12+ characters)").fill(PASSWORD);
+  await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
   await page.getByLabel("Confirm password").fill(PASSWORD);
-  await page.getByLabel("Invite code").fill("wrong-code-000");
-  await page.getByRole("button", { name: "Register" }).click();
+  await page.getByLabel("Invitation code").fill("wrong-code-000");
+  await page.getByRole("button", { name: "Create account" }).click();
   await expect(page.getByText("Invalid invitation code")).toBeVisible({ timeout: 15000 });
 
   // --- Register with the bootstrap code ---
-  await page.getByLabel("Invite code").fill(INVITE_CODE);
-  await page.getByRole("button", { name: "Register" }).click();
-  await expect(page.getByText("Check your inbox for the verification link")).toBeVisible({
-    timeout: 15000,
-  });
+  await page.getByLabel("Invitation code").fill(INVITE_CODE);
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByRole("heading", { name: "Check your inbox" })).toBeVisible({timeout:15000});
 
   // --- Negative: login before verification is blocked ---
   await page.goto("/");

@@ -16,7 +16,7 @@ for(const [path,confirmation] of [["/access/login","Confirm sign-in"],["/access/
 // Public routes render without a session.
 test("/ renders login", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Owner login" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to your vault" })).toBeVisible();
 });
 
 test("production CSP uses fresh nonces, permits hydration and blocks an unapproved inline script", async ({ page }) => {
@@ -56,14 +56,14 @@ for (const path of PROTECTED) {
   test(`${path} redirects logged-out visitors to /`, async ({ page }) => {
     await page.goto(path);
     await expect(page).toHaveURL(path === "/recovery" ? /\/access\/login$/ : /\/$/, { timeout: 15000 });
-    await expect(page.getByRole("heading", { name: path === "/recovery" ? "Beneficiary sign-in" : "Owner login" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: path === "/recovery" ? "Beneficiary sign-in" : "Sign in to your vault" })).toBeVisible();
   });
 }
 
 test("/login redirects to /", async ({ page }) => {
   await page.goto("/login");
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole("heading", { name: "Owner login" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sign in to your vault" })).toBeVisible();
 });
 
 test("stale sessionStorage token does NOT admit /recovery", async ({ page }) => {

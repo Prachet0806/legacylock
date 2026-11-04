@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { requireLiveBackend, requireOk, freshOwner } from "./e2e-guard";
+import { requireLiveBackend, requireOk, freshOwner, prepareReleaseEvidence } from "./e2e-guard";
 import {writeFileSync} from "node:fs";
 
 // Zero-knowledge golden path: owner encrypts -> beneficiary recovers after
@@ -116,6 +116,7 @@ test("golden path: encrypt -> trigger -> 2-share recovery -> decrypt", async ({
   await expect(linkEl).toBeVisible();
   const link = (await linkEl.textContent())?.trim() ?? "";
   expect(link).toContain("/access/invite#");
+  await prepareReleaseEvidence(request, BEN_EMAIL, 2);
 
   // --- Owner: manual trigger ---
   await page.goto("/heartbeat");
