@@ -22,24 +22,22 @@ export default function Dashboard() {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    (async () => {
-      try {
-        const s = await getStats();
-        setStatus(s.vault_status);
-        setCounts({ messages: s.message_count, beneficiaries: s.beneficiary_count });
-      } catch {
-        /* logged out — landing content still renders */
-      }
-      try {
-        const hb = await getHeartbeat();
-        setDeadline(nextDeadline(hb));
-        setLastCheckin(hb.last_check_in ?? null);
-        setHeartbeatArmed(hb.armed);
-      } catch {
-        /* heartbeat may not exist yet */
-      }
-      try { setRecovery(await getReadiness()); } catch { /* recovery status stays unknown */ }
-    })();
+    let cancelled = false;
+    getStats().then((s) => {
+      if (cancelled) return;
+      setStatus(s.vault_status);
+      setCounts({ messages: s.message_count, beneficiaries: s.beneficiary_count });
+    }).catch(() => { /* logged out — landing content still renders */ });
+    getHeartbeat().then((hb) => {
+      if (cancelled) return;
+      setDeadline(nextDeadline(hb));
+      setLastCheckin(hb.last_check_in ?? null);
+      setHeartbeatArmed(hb.armed);
+    }).catch(() => { /* heartbeat may not exist yet */ });
+    getReadiness().then((readiness) => {
+      if (!cancelled) setRecovery(readiness);
+    }).catch(() => { /* recovery status stays unknown */ });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {

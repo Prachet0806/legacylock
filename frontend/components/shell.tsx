@@ -23,6 +23,7 @@ import { useToast } from "./toast";
 import { Spinner, StatusChip } from "./ui";
 import { VaultLockIndicator } from "./security";
 import { ApiError } from "../lib/api/transport";
+import { HomeLoading } from "./home-loading";
 
 const NAV_HOME = [
   { href: "/home", label: "Overview", icon: LayoutDashboard },
@@ -114,8 +115,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setAuthError("");
     (async () => {
       if (pathname !== "/recovery") try {
-        const me=await getMe();
-        const material=await getCryptoMaterial().catch(()=>null);
+        const [me, material] = await Promise.all([
+          getMe(),
+          getCryptoMaterial().catch(() => null),
+        ]);
         if (!cancelled) {
           bindVault(`owner:${me.id}`, material?.material_revision??0);
           setPrincipal("owner");
@@ -213,6 +216,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   if (!authed) {
+    if (!authError && pathname === "/home") return <HomeLoading />;
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted">
         {authError ? <>

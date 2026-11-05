@@ -63,10 +63,12 @@ test("register -> verify -> login; wrong code rejected; pre-verify login blocked
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/home$/);
+});
 
-  // --- Resend cooldown is enumeration-safe (generic success, still unverified n/a) ---
+test("resend verification gives an unknown address a generic success", async ({ request }) => {
   const resend = await request.post(`${API}/auth/resend-verification`, {
-    data: { email: `nobody-${STAMP}@example.com` },
+    data: { email: `nobody-${Date.now()}@example.com` },
   });
-  expect(resend.ok()).toBe(true);
+  expect(resend.status(), await resend.text()).toBe(200);
+  expect((await resend.json()).message).toBe("If the account needs verification, an email has been sent");
 });
