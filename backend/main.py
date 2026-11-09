@@ -138,16 +138,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if settings.environment != "test" and settings.background_in_api
         else None
     )
-    yield
-    if task:
-        task.cancel()
-    if delivery_task:
-        delivery_task.cancel()
-    await asyncio.gather(
-        *([task] if task else []),
-        *([delivery_task] if delivery_task else []),
-        return_exceptions=True,
-    )
+    demo_scheduler = None
+    if settings.task_mode == "single_process_demo":
+        from services.demo_scheduler import DemoScheduler
+
+        demo_scheduler = DemoScheduler()
+        demo_scheduler.start()
+    try:
+        yield
+    finally:
+        if demo_scheduler:
+            await demo_scheduler.stop()
+        if task:
+            task.cancel()
+        if delivery_task:
+            delivery_task.cancel()
+        await asyncio.gather(
+            *([task] if task else []),
+            *([delivery_task] if delivery_task else []),
+            return_exceptions=True,
+        )
 
 
 app = FastAPI(title="LegacyLock API", lifespan=lifespan)

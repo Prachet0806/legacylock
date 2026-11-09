@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { ArrowRight, CheckCircle2, Vault as VaultIcon } from "lucide-react";
 import { checkin, getHeartbeat, getStats, getVaultStatus, nextDeadline } from "../../lib/client";
 import { getReadiness, type Readiness } from "../../lib/api/owner";
+import { rawFetch } from "../../lib/api/transport";
 import { useToast } from "../../components/toast";
 import { SecurityChecklist } from "../../components/security";
 import { formatCountdown, stateTone } from "../../components/vault-ui";
@@ -21,12 +22,14 @@ export default function Dashboard() {
   const [reloadVersion, setReloadVersion] = useState(0);
   const [heartbeatArmed, setHeartbeatArmed] = useState<boolean | null>(null);
   const [checkinError, setCheckinError] = useState("");
+  const [schedulerState, setSchedulerState] = useState<"running" | "delayed" | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     let cancelled = false;
     setRecovery(null);
     setRecoveryError("");
+    setSchedulerState(null);
     getStats().then((s) => {
       if (cancelled) return;
       setStatus(s.vault_status);
@@ -41,6 +44,11 @@ export default function Dashboard() {
     getReadiness().then((readiness) => {
       if (!cancelled) setRecovery(readiness);
     }).catch(() => { if (!cancelled) setRecoveryError("Could not check vault setup."); });
+    rawFetch("/scheduler-health").then((response) => {
+      if (!cancelled && response.status !== 404) {
+        setSchedulerState(response.ok ? "running" : "delayed");
+      }
+    }).catch(() => { /* An unavailable status endpoint is not scheduler evidence. */ });
     return () => { cancelled = true; };
   }, [reloadVersion]);
 
@@ -144,6 +152,17 @@ export default function Dashboard() {
           {checkinError.toLowerCase().includes("recovery setup") && (
             <Link className="btn-secondary mt-4" href="/settings/security">Review recovery readiness</Link>
           )}
+        </section>
+      )}
+
+      {schedulerState && (
+        <section className="surface-lg mt-4" role={schedulerState === "delayed" ? "alert" : "status"}>
+          <h2 className="font-semibold">Background checks {schedulerState === "running" ? "running" : "delayed"}</h2>
+          <p className="supporting mt-1 text-sm">
+            {schedulerState === "running"
+              ? "Your vault is checked periodically. New notifications are queued for delivery when created."
+              : "Automatic checks or notification delivery may take longer than usual. Please check back later."}
+          </p>
         </section>
       )}
 

@@ -13,6 +13,8 @@ from services.outbox import payload_key, work_once
 def main():
     settings = get_settings()
     settings.validate_production()
+    if settings.task_mode == "single_process_demo":
+        raise RuntimeError("Separate worker must not run in single-process demo mode")
     payload_key()
     if settings.environment == "production" and not settings.resend_api_key:
         raise RuntimeError("Email credentials required")

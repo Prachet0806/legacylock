@@ -44,6 +44,17 @@ def test_production_requires_explicit_release_configuration() -> None:
         settings.validate_production()
 
 
+def test_demo_mode_requires_explicit_separate_api_loops() -> None:
+    settings = _production_settings(task_mode="single_process_demo")
+    settings.validate_production()
+    settings.background_in_api = True
+    with pytest.raises(RuntimeError, match="BACKGROUND_IN_API=false"):
+        settings.validate_production()
+    settings.background_in_api = False
+    with pytest.raises(PreflightError, match="Separate worker is disabled"):
+        check("worker", settings)
+
+
 def test_production_api_requires_monitor_credential_without_requiring_it_on_worker() -> None:
     settings = _production_settings()
     settings.validate_production()  # the private worker has no operations endpoint

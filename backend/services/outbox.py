@@ -103,6 +103,7 @@ def enqueue(
     )
     job.payload = protect(job, {"to": to, "subject": subject, "body": body})
     db.add(job)
+    db.info["legacylock_outbox_enqueued"] = True
     return job
 
 
@@ -269,7 +270,7 @@ async def deliver_one(job_id, token, session_factory):
         db.close()
 
 
-def work_once(session_factory, limit=20):
+def work_once(session_factory, limit=20, concurrency=4):
     if not get_settings().delivery_enabled:
         return 0
     db = session_factory()
@@ -303,7 +304,7 @@ def work_once(session_factory, limit=20):
         db.close()
 
     async def run():
-        semaphore = asyncio.Semaphore(4)
+        semaphore = asyncio.Semaphore(concurrency)
 
         async def bounded(job_id, token):
             async with semaphore:

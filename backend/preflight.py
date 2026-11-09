@@ -86,6 +86,8 @@ def check(role: str, settings: Settings) -> None:
         settings.validate_production_api()
     elif role == "worker":
         settings.validate_production()
+        if settings.task_mode == "single_process_demo":
+            raise PreflightError("Separate worker is disabled in single-process demo mode")
     else:
         raise PreflightError("Role must be api or worker")
     check_database(settings)
