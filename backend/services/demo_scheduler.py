@@ -44,7 +44,7 @@ def scheduler_status() -> dict | None:
 def _after_commit(session: Session) -> None:
     if session.in_nested_transaction():
         return
-    if session.info.pop("legacylock_outbox_enqueued", False):
+    if session.info.pop("legacylock_outbox_enqueued", None):
         signal_delivery()
 
 
@@ -52,6 +52,8 @@ def _after_commit(session: Session) -> None:
 def _after_rollback(session: Session, previous_transaction: SessionTransaction) -> None:
     if previous_transaction.parent is None:
         session.info.pop("legacylock_outbox_enqueued", None)
+    else:
+        session.info.get("legacylock_outbox_enqueued", set()).discard(previous_transaction)
 
 
 @contextmanager

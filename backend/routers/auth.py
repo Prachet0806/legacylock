@@ -1,5 +1,6 @@
 """Authentication routes — register, verify, login, logout, token refresh, me."""
 
+import asyncio
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -115,13 +116,12 @@ async def register(
         )
 
     email = str(data.email).strip().lower()
+    # Hash before checking out a database connection. On the demo instance a
+    # single Argon2 slot can make this wait long enough to exhaust a small pool.
+    password_hash = await asyncio.to_thread(hash_password, data.password)
     user = db.query(User).filter(User.email == email).with_for_update().first()
     if user is None:
-        import asyncio
-
-        user = User(
-            email=email, password_hash=await asyncio.to_thread(hash_password, data.password)
-        )
+        user = User(email=email, password_hash=password_hash)
         try:
             with db.begin_nested():
                 db.add(user)
@@ -233,13 +233,22 @@ def login(
     email = str(data.email).strip().lower()
     user = db.query(User).filter(User.email == email).first()
     if user is None:
+        db.rollback()  # release the read transaction before the expensive hash
         # Constant-time: burn the same Argon2id cost as a real check.
         verify_password(data.password, _DUMMY_HASH)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
-    if not verify_password(data.password, user.password_hash):
+    user_id, password_hash = user.id, user.password_hash
+    db.rollback()  # do not occupy a pool connection while waiting for Argon2
+    if not verify_password(data.password, password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+    user = db.get(User, user_id)
+    if user is None or user.password_hash != password_hash:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",

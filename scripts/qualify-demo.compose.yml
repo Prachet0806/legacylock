@@ -1,0 +1,72 @@
+# Disposable local qualification. Synthetic database, users, and keys only.
+# From the repository root: docker compose -p legacylock-qualify -f scripts/qualify-demo.compose.yml up -d --build
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: legacylock
+      POSTGRES_PASSWORD: qualify-only
+      POSTGRES_DB: legacylock
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U legacylock -d legacylock"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    ports:
+      - "127.0.0.1:15432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+
+  migrate:
+    build:
+      context: ../backend
+    image: legacylock-backend:qualify
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+psycopg://legacylock:qualify-only@db:5432/legacylock
+      SESSION_SECRET: qualify-only-secret-000000000000000000000
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && python seed_dev_user.py owner@example.com DemoPassword123!Long"]
+
+  api:
+    image: legacylock-backend:qualify
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: test
+      USE_POSTGRES: "1"
+      MIGRATED_SCHEMA_ONLY: "true"
+      DATABASE_URL: postgresql+psycopg://legacylock:qualify-only@db:5432/legacylock
+      SESSION_SECRET: qualify-only-secret-000000000000000000000
+      TASK_MODE: single_process_demo
+      BACKGROUND_IN_API: "false"
+      DEMO_CHECK_INTERVAL_SECONDS: "1800"
+      DEMO_DELIVERY_BATCH_SIZE: "5"
+      DEMO_ARGON2_CONCURRENCY: "1"
+      DB_POOL_SIZE: "3"
+      DB_MAX_OVERFLOW: "0"
+      HEARTBEAT_ENABLED: "true"
+      RELEASE_HOLD: "false"
+      DELIVERY_ENABLED: "true"
+      REGISTRATION_INVITE_CODE: test-invite-code-123
+      RESEND_API_KEY: ""
+      OPERATIONS_TOKEN: qualify-only-operations-token-000000000000
+      ALLOWED_HOSTS: localhost,127.0.0.1,api
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private.pem
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public.pem
+    volumes:
+      - ../backend/keys/jwt_private.pem:/run/secrets/jwt_private.pem:ro
+      - ../backend/keys/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    ports:
+      - "127.0.0.1:18865:8000"
+    cpus: 0.10
+    mem_limit: 512m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/scheduler-health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12

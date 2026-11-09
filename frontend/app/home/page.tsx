@@ -29,7 +29,6 @@ export default function Dashboard() {
     let cancelled = false;
     setRecovery(null);
     setRecoveryError("");
-    setSchedulerState(null);
     getStats().then((s) => {
       if (cancelled) return;
       setStatus(s.vault_status);
@@ -44,12 +43,42 @@ export default function Dashboard() {
     getReadiness().then((readiness) => {
       if (!cancelled) setRecovery(readiness);
     }).catch(() => { if (!cancelled) setRecoveryError("Could not check vault setup."); });
-    rawFetch("/scheduler-health").then((response) => {
-      if (!cancelled && response.status !== 404) {
-        setSchedulerState(response.ok ? "running" : "delayed");
-      }
-    }).catch(() => { /* An unavailable status endpoint is not scheduler evidence. */ });
     return () => { cancelled = true; };
+  }, [reloadVersion]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let supported: boolean | null = null;
+    let sequence = 0;
+    setSchedulerState(null);
+
+    const refresh = () => {
+      if (supported === false) return;
+      const current = ++sequence;
+      rawFetch("/scheduler-health", { cache: "no-store" }).then((response) => {
+        if (cancelled || current !== sequence) return;
+        if (response.status === 404) {
+          supported = false;
+          setSchedulerState(null);
+          return;
+        }
+        supported = true;
+        setSchedulerState(response.ok ? "running" : "delayed");
+      }).catch(() => {
+        if (!cancelled && current === sequence && supported === true) {
+          setSchedulerState("delayed");
+        }
+      });
+    };
+
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+    };
   }, [reloadVersion]);
 
   useEffect(() => {

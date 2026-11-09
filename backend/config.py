@@ -97,6 +97,8 @@ class Settings(BaseSettings):
         """Reject implicit development defaults before any production work starts."""
         if self.task_mode == "single_process_demo" and self.background_in_api:
             raise RuntimeError("Single-process demo mode requires BACKGROUND_IN_API=false")
+        if self.task_mode == "single_process_demo" and self.db_pool_size < 2:
+            raise RuntimeError("Single-process demo mode requires DB_POOL_SIZE >= 2")
         if self.environment != "production":
             return
         required = {

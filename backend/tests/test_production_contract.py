@@ -2,6 +2,7 @@
 
 import base64
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlencode
 
 import pytest
@@ -10,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy.pool import QueuePool
 
 from config import Settings
 from preflight import PreflightError, check
@@ -53,6 +55,40 @@ def test_demo_mode_requires_explicit_separate_api_loops() -> None:
     settings.background_in_api = False
     with pytest.raises(PreflightError, match="Separate worker is disabled"):
         check("worker", settings)
+
+
+def test_demo_mode_requires_two_pool_connections_for_advisory_lock() -> None:
+    settings = _production_settings(task_mode="single_process_demo", db_pool_size=1)
+    with pytest.raises(RuntimeError, match="DB_POOL_SIZE >= 2"):
+        settings.validate_production()
+
+
+def test_login_drops_db_connection_during_hash_and_rechecks_password(
+    client: TestClient, auth: dict[str, str], monkeypatch: MonkeyPatch,
+) -> None:
+    from db import SessionLocal, engine
+    from models import User
+    from routers import auth as auth_router
+
+    with SessionLocal() as db:
+        user = db.query(User).one()
+        user_id, email = int(user.id), str(user.email)
+    checked_out: list[int] = []
+
+    def rotate_during_verify(password: str, password_hash: str) -> bool:
+        checked_out.append(cast(QueuePool, engine.pool).checkedout())
+        with SessionLocal() as db:
+            db.query(User).filter_by(id=user_id).update({"password_hash": "rotated"})
+            db.commit()
+        return True
+
+    monkeypatch.setattr(auth_router, "verify_password", rotate_during_verify)
+    response = client.post(
+        "/auth/login", json={"email": email, "password": "TestPass123!Long"}
+    )
+    assert response.status_code == 401
+    assert checked_out == [0]
+    assert "legacylock_owner_session" not in response.cookies
 
 
 def test_production_api_requires_monitor_credential_without_requiring_it_on_worker() -> None:

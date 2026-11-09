@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, dev, unstable]
+    branches: [main, dev, unstable, optimize]
   pull_request:
     branches: [main, dev, unstable]
 permissions:

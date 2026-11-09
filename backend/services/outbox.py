@@ -103,7 +103,8 @@ def enqueue(
     )
     job.payload = protect(job, {"to": to, "subject": subject, "body": body})
     db.add(job)
-    db.info["legacylock_outbox_enqueued"] = True
+    transaction = db.get_nested_transaction() or db.get_transaction()
+    db.info.setdefault("legacylock_outbox_enqueued", set()).add(transaction)
     return job
 
 
@@ -270,7 +271,7 @@ async def deliver_one(job_id, token, session_factory):
         db.close()
 
 
-def work_once(session_factory, limit=20, concurrency=4):
+def work_once(session_factory, limit=20, concurrency=4):  # noqa: ANN001 - legacy untyped API
     if not get_settings().delivery_enabled:
         return 0
     db = session_factory()
