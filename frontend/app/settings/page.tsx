@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AlertOctagon, ArrowRight, KeyRound, Lock, ShieldCheck, Trash2 } from "lucide-react";
 import { CRYPTO_VERSION, assertEpoch, currentEpoch, materialRevision, rewrap, subscribe, isUnlocked } from "../../lib/crypto-session";
-import { putCryptoMaterial, wipeVault } from "../../lib/client";
+import { getCryptoMaterial, putCryptoMaterial, wipeVault } from "../../lib/client";
 import { useVault } from "../../lib/store/vault-context";
 import { Modal, Spinner } from "../../components/ui";
 import { useToast } from "../../components/toast";
@@ -22,7 +22,17 @@ export default function SettingsPage() {
   const [wipeText, setWipeText] = useState("");
   const [showWipe, setShowWipe] = useState(false);
   const [wiping, setWiping] = useState(false);
+  const [vaultPresence, setVaultPresence] = useState<"checking" | "missing" | "ready" | "error">("checking");
+  const [presenceVersion, setPresenceVersion] = useState(0);
   useEffect(() => subscribe(() => { if(!isUnlocked()) {setNewPass("");setConfirmPass("");setWipePass("");setWipeText("");setShowWipe(false);} }),[]);
+  useEffect(() => {
+    let cancelled = false;
+    setVaultPresence("checking");
+    getCryptoMaterial()
+      .then((material) => { if (!cancelled) setVaultPresence(material.wrapped_vmk ? "ready" : "missing"); })
+      .catch(() => { if (!cancelled) setVaultPresence("error"); });
+    return () => { cancelled = true; };
+  }, [presenceVersion]);
 
   async function onRewrap() {
     if (newPass.length < 12) {
@@ -79,6 +89,19 @@ export default function SettingsPage() {
     }
   }
 
+  if (vaultPresence !== "ready") return <main className="mx-auto max-w-2xl px-4 py-8">
+    <h1 className="page-title">Settings</h1>
+    {vaultPresence === "missing" ? <section className="surface-lg mt-6">
+      <h2 className="section-title">Set up your vault first</h2>
+      <p className="supporting mt-2">Passphrase changes and recovery distributions become available after vault setup. Start from your dashboard.</p>
+      <Link className="btn-primary mt-4" href="/home">Go to dashboard</Link>
+    </section> : vaultPresence === "error" ? <section className="surface-lg mt-6">
+      <h2 className="section-title">Vault status unavailable</h2>
+      <p className="supporting mt-2">We could not check whether this vault has been set up.</p>
+      <button type="button" className="btn-secondary mt-4" onClick={() => setPresenceVersion((version) => version + 1)}>Try again</button>
+    </section> : <p className="supporting mt-6" aria-busy="true">Checking vault setup…</p>}
+  </main>;
+
   return (
     <main className="mx-auto max-w-2xl px-4 py-8">
       <h1 className="page-title">Settings</h1>
@@ -121,8 +144,8 @@ export default function SettingsPage() {
           <Link href="/settings/security" className="flex items-center gap-3 border-t border-border py-3 transition-colors hover:text-text">
             <ShieldCheck className="h-4 w-4 shrink-0 text-success" />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">Privacy & zero-knowledge architecture</p>
-              <p className="text-xs text-faint">How your data stays private</p>
+              <p className="text-sm font-medium">Recovery readiness</p>
+              <p className="text-xs text-faint">Review setup, assignments, and your recovery drill</p>
             </div>
             <ArrowRight className="h-4 w-4 text-faint" />
           </Link>

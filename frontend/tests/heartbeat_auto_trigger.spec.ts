@@ -1,24 +1,20 @@
 import { test, expect } from "@playwright/test";
-import { requireLiveBackend, requireOk, freshOwner, prepareReleaseEvidence } from "./e2e-guard";
+import { requireLiveBackend, freshOwner, prepareReleaseEvidence } from "./e2e-guard";
 
 // Automatic dead-man-switch path: owner configures heartbeat -> simulated
 // inactivity (non-prod run-check time travel) drives ACTIVE -> GRACE ->
 // TRIGGERED with reason=inactivity -> beneficiary recovers, proving the
 // automatic release is equivalent to the manual one. No request body may
 // carry the vault passphrase, raw shares, or message plaintext.
-// Requires a live backend (NEXT_PUBLIC_API_URL, default :8000) with a seeded
-// owner (E2E_OWNER_EMAIL/PASSWORD). Skips cleanly when unavailable.
+// Requires a live backend (NEXT_PUBLIC_API_URL, default :8000). Creates a
+// fresh verified owner for each run. Skips cleanly when unavailable.
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-let OWNER_EMAIL = process.env.E2E_OWNER_EMAIL ?? "owner@example.com";
+let OWNER_EMAIL = "";
 const OWNER_PASSWORD = process.env.E2E_OWNER_PASSWORD ?? "DevPassword123456";
 const VAULT_PASSPHRASE = "E2E-Auto-Passphrase-12345";
 
 test.beforeAll(async ({ request }) => {
   await requireLiveBackend(request, "auto-trigger spec");
-  const login = await request
-    .post(`${API}/auth/login`, { data: { email: OWNER_EMAIL, password: OWNER_PASSWORD } })
-    .catch(() => null);
-  await requireOk(login, "auto-trigger path needs a seeded owner");
 });
 
 test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> recovery", async ({
@@ -58,7 +54,8 @@ test("auto path: heartbeat 30/7 -> grace -> checkin cancels -> triggered -> reco
   await expect(page).toHaveURL(/\/home$/);
 
   // --- Owner: vault setup, capture 3 shares (default 2-of-3) ---
-  await page.goto("/vault/setup");
+  await page.getByRole("link", { name: "Start vault setup" }).click();
+  await expect(page).toHaveURL(/\/vault\/setup$/);
   // Step 1 is Policy (defaults 2-of-3) -> Continue to the passphrase step.
   await page.getByRole("button", { name: "Continue" }).click();
   await page.getByLabel("Vault passphrase").fill(VAULT_PASSPHRASE);

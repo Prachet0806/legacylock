@@ -119,6 +119,12 @@ class Settings(BaseSettings):
         if not self.resend_api_key or not self.notification_email_from.strip():
             raise RuntimeError("Production email credentials and sender are required")
 
+    def validate_production_api(self) -> None:
+        """The public API must support its restricted recovery monitor."""
+        self.validate_production()
+        if self.environment == "production" and len(self.operations_token) < 32:
+            raise RuntimeError("Production OPERATIONS_TOKEN must be at least 32 characters")
+
     def _validate_production_network(self) -> None:
         if not _is_https_origin(self.frontend_url):
             raise RuntimeError("Production FRONTEND_URL must be the exact HTTPS application origin")

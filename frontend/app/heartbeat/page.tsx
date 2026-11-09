@@ -17,6 +17,7 @@ import {
 import { Modal, Spinner, StatusChip } from "../../components/ui";
 import { StateTimeline, formatCountdown, stateTone } from "../../components/vault-ui";
 import { useToast } from "../../components/toast";
+import { getReadiness, type Readiness } from "../../lib/api/owner";
 
 export default function HeartbeatPage() {
   const { notify } = useToast();
@@ -32,11 +33,16 @@ export default function HeartbeatPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [checkinError, setCheckinError] = useState("");
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   async function refresh() {
-    setCfg(await getHeartbeat());
-    setStatus(await getVaultStatus());
+    const [heartbeat, vaultStatus, recovery] = await Promise.all([
+      getHeartbeat(), getVaultStatus(), getReadiness().catch(() => null),
+    ]);
+    setCfg(heartbeat);
+    setStatus(vaultStatus);
+    setReadiness(recovery);
   }
   useEffect(() => {
     refresh()
@@ -90,6 +96,10 @@ export default function HeartbeatPage() {
   }
 
   const state = status?.status ?? null;
+  const recoveryReady = !!readiness?.initialized
+    && readiness.ceremony_status === "READY"
+    && readiness.quorum_assigned
+    && readiness.owner_reported_drill !== null;
 
   if (loading) {
     return (
@@ -103,12 +113,23 @@ export default function HeartbeatPage() {
     );
   }
 
+  if (readiness?.initialized === false) {
+    return <main className="mx-auto max-w-3xl px-4 py-8">
+      <p className="supporting">Heartbeat</p>
+      <h1 className="page-title mt-1">Set up your vault first</h1>
+      <section className="surface-lg mt-6">
+        <p className="supporting">Your check-in plan starts after you create your vault key and save your recovery shares. The dashboard has the first setup step.</p>
+        <Link className="btn-primary mt-5" href="/home">Go to dashboard</Link>
+      </section>
+    </main>;
+  }
+
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
       <p className="supporting">Heartbeat</p>
       <h1 className="page-title mt-1">Your vault is {state === "grace" ? "waiting" : state === "triggered" ? "released" : "active"}</h1>
       {status?.release_hold && <p role="status" className="mt-3 text-sm text-warn">Automatic and manual releases are temporarily held by the operator. You can still check in.</p>}
-      {state !== "triggered" && !status?.armed && <p className="mt-3 text-sm text-muted">Heartbeat release is not armed. Your first check-in arms it.</p>}
+      {state !== "triggered" && status?.armed === false && <p className="mt-3 text-sm text-muted">Your vault can be active before automatic release starts. Your first successful check-in arms the schedule.</p>}
       <p className="supporting mt-2">
         {cfg?.last_check_in
           ? `You last checked in ${new Date(cfg.last_check_in).toLocaleString()}.`
@@ -117,17 +138,26 @@ export default function HeartbeatPage() {
 
       {/* Signature hero */}
       <section className="surface-hero mt-6" aria-label="Heartbeat status">
-        <StatusChip tone={stateTone(state)} pulse={state === "grace"} className="mx-auto">
-          {(state ?? "unknown").toUpperCase()}
+        <StatusChip tone={status?.armed === false && state === "active" ? "neutral" : stateTone(state)} pulse={state === "grace"} className="mx-auto">
+          {status?.armed === false && state === "active" ? "NOT ARMED" : (state ?? "unknown").toUpperCase()}
         </StatusChip>
-        <p className="mt-6 font-mono text-5xl font-bold tabular-nums tracking-tight" aria-live="off">
-          {formatCountdown(nextDeadline(cfg), now)}
-        </p>
-        <p className="supporting mt-2">until check-in</p>
-        <button type="button" className="btn-primary mt-6 min-w-44" disabled={state === "triggered"} onClick={onCheckin}>
-          <CheckCircle2 className="h-4 w-4" />
-          Check in now
-        </button>
+        {status?.armed === false && state !== "triggered" ? <>
+          <p className="mt-6 text-2xl font-medium">Check-in plan not armed</p>
+          <p className="supporting mt-2">Complete recovery readiness, then check in to start your schedule.</p>
+        </> : <>
+          <p className="mt-6 font-mono text-5xl font-bold tabular-nums tracking-tight" aria-live="off">
+            {formatCountdown(nextDeadline(cfg), now)}
+          </p>
+          <p className="supporting mt-2">until check-in</p>
+        </>}
+        {status?.armed === false && readiness && !recoveryReady ? (
+          <Link className="btn-primary mt-6 min-w-44" href="/settings/security">Review recovery readiness</Link>
+        ) : (
+          <button type="button" className="btn-primary mt-6 min-w-44" disabled={state === "triggered"} onClick={onCheckin}>
+            <CheckCircle2 className="h-4 w-4" />
+            Check in now
+          </button>
+        )}
       </section>
 
       {checkinError && (

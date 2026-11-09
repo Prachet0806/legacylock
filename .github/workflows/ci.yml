@@ -229,6 +229,7 @@ jobs:
             -e "DATABASE_URL=postgresql+psycopg://legacylock:ci-only@postgres:5432/legacylock?sslmode=verify-full&sslrootcert=/run/secrets/postgres.crt" \
             -e SESSION_SECRET=ci-image-isolated-configuration-0000000000 \
             -e AUTH_EPOCH=ci-image-isolated \
+            -e OPERATIONS_TOKEN=ci-image-isolated-operations-token-00000000 \
             -e JWT_PRIVATE_KEY_PATH=/run/secrets/jwt_private.pem \
             -e JWT_PUBLIC_KEY_PATH=/run/secrets/jwt_public.pem \
             -e DELIVERY_PAYLOAD_KEY="$PAYLOAD_KEY" \
@@ -257,6 +258,8 @@ jobs:
             -e ALLOWED_ORIGINS=https://app.legacylock.test \
             -e ALLOWED_HOSTS=backend,localhost,127.0.0.1 \
             legacylock-backend:ci python worker.py
+          docker exec backend python preflight.py api
+          docker exec worker python preflight.py worker
           for i in $(seq 1 30); do
             checkpoint_count="$(docker exec postgres psql -U legacylock -d legacylock -tAc "SELECT count(*) FROM worker_checkpoint WHERE kind IN ('checker','delivery') AND last_success_at IS NOT NULL AND last_error IS NULL")"
             if [ "$checkpoint_count" = "2" ]; then break; fi

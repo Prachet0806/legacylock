@@ -63,6 +63,40 @@ test("register -> verify -> login; wrong code rejected; pre-verify login blocked
   await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/home$/);
+  await expect(page.getByRole("heading", { name: "Set up your vault" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Start vault setup" })).toBeVisible();
+
+  const statContrast = () => page.locator(".stat-tile").first().evaluate((tile) => {
+    const channels = (color: string) => (color.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+    const luminance = (color: string) => {
+      const [r, g, b] = channels(color).map((value) => {
+        const channel = value / 255;
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const background = luminance(getComputedStyle(tile).backgroundColor);
+    const figure = luminance(getComputedStyle(tile.firstElementChild!).color);
+    return (Math.max(background, figure) + 0.05) / (Math.min(background, figure) + 0.05);
+  });
+  expect(await statContrast()).toBeGreaterThanOrEqual(4.5);
+  await page.getByLabel("Switch to light mode").click();
+  expect(await statContrast()).toBeGreaterThanOrEqual(4.5);
+
+  // First-time setup belongs to the authenticated dashboard. The owner's
+  // Recovery navigation must stay in the owner journey.
+  await page.getByRole("navigation", { name: "Recovery" }).getByRole("link", { name: "Recovery readiness" }).click();
+  await expect(page).toHaveURL(/\/settings\/security$/);
+  await expect(page.getByRole("heading", { name: "Recovery readiness" })).toBeVisible();
+  await page.getByRole("link", { name: "Overview" }).click();
+  await page.getByRole("link", { name: "Start vault setup" }).click();
+  await expect(page).toHaveURL(/\/vault\/setup$/);
+  await expect(page.getByRole("heading", { name: "Choose your recovery policy" })).toBeVisible();
+
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.getByRole("button", { name: "Open account menu" }).click();
+  await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
 });
 
 test("resend verification gives an unknown address a generic success", async ({ request }) => {

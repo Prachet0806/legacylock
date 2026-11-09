@@ -35,7 +35,7 @@ from services.heartbeat_checker import check_heartbeat
 from services.operations import checkpoint
 
 settings = get_settings()
-settings.validate_production()
+settings.validate_production_api()
 
 setup_logging()
 logger = logging.getLogger("legacylock")
@@ -86,7 +86,7 @@ async def _heartbeat_loop() -> None:
             logger.exception("Heartbeat check failed")
 
 
-async def _delivery_loop():
+async def _delivery_loop() -> None:
     from services.outbox import work_once
 
     while True:

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowRight, Link2, Send, UserPlus, UserX, Users } from "lucide-react";
 import { clsx } from "clsx";
@@ -15,6 +16,7 @@ import {
 import { Avatar, CopyButton, EmptyState, Modal, Spinner, StatusChip } from "../../components/ui";
 import { RecoveryReadiness } from "../../components/vault-ui";
 import { useToast } from "../../components/toast";
+import { getReadiness } from "../../lib/api/owner";
 
 function statusTone(s: string): "success" | "warn" | "neutral" {
   return s === "accepted" ? "success" : s === "sent" ? "warn" : "neutral";
@@ -160,11 +162,15 @@ export default function BeneficiariesPage() {
   const [link, setLink] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<Beneficiary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [vaultInitialized, setVaultInitialized] = useState<boolean | null>(null);
 
   async function refresh() {
     try {
-      const [list, policy] = await Promise.all([listBeneficiaries(), getRecoveryPolicy().catch(() => null)]);
+      const [list, policy, readiness] = await Promise.all([
+        listBeneficiaries(), getRecoveryPolicy().catch(() => null), getReadiness().catch(() => null),
+      ]);
       setRows(list);
+      setVaultInitialized(readiness?.initialized ?? null);
       if (policy) {
         setThreshold(policy.recovery_threshold);
         setTotal(policy.recovery_total);
@@ -234,10 +240,16 @@ export default function BeneficiariesPage() {
       </div>
 
       <div className="mt-6">
-        <RecoveryReadiness assigned={assigned} threshold={threshold} total={total} />
-        <p className="mt-2 text-center text-xs text-faint">
-          Assignment metadata · {threshold} of {total} {total === 1 ? "person" : "people"} required
-        </p>
+        {vaultInitialized === false ? <div className="surface-lg">
+          <h2 className="section-title">Recovery shares come after vault setup</h2>
+          <p className="supporting mt-2">You can add trusted people now. Set up your vault from the dashboard before assigning shares.</p>
+          <Link className="btn-secondary mt-4" href="/home">Go to dashboard</Link>
+        </div> : <>
+          <RecoveryReadiness assigned={assigned} threshold={threshold} total={total} />
+          <p className="mt-2 text-center text-xs text-faint">
+            Assignment metadata · {threshold} of {total} {total === 1 ? "person" : "people"} required
+          </p>
+        </>}
       </div>
 
       {showAdd && (

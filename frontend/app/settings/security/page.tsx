@@ -24,6 +24,8 @@ export default function SecurityCenterPage(){
  <p className="supporting mt-3">Enrollment, share assignments, and a recovery drill are separate evidence. Mailbox access alone cannot decrypt your vault.</p>
  {error&&<p role="alert" className="mt-4 text-danger">{error}</p>}
  {!state?<p className="mt-6">Loading current evidence…</p>:<>
+ {!state.initialized&&<Link className="btn-primary mt-5" href="/vault/setup">Start vault setup</Link>}
+ {state.initialized&&!state.quorum_assigned&&<Link className="btn-secondary mt-5" href="/beneficiaries">Review trusted people</Link>}
  <section className="surface-lg mt-6"><SecurityChecklist items={[
  {label:"Vault wrapping material saved",ok:state.initialized},
  {label:`Finalized recovery ceremony (${state.threshold}-of-${state.total})`,ok:state.ceremony_status === "READY"},

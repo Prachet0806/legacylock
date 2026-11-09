@@ -1,19 +1,21 @@
 # LegacyLock: local audit and deployment roadmap
 
+**Database decision updated 5 November 2026:** the deployment target is a new, empty Neon PostgreSQL database. Supabase references below describe the 3 November audit and are superseded for the active setup by [DEPLOY.md](../DEPLOY.md). No Neon connection, migration, backup, or hosted qualification has been verified here.
+
 **Audit date:** 3 November 2026  
 **Scope:** current `unstable` checkout at `fa41713`, including eight uncommitted frontend changes. This is a local code, configuration, documentation, and test audit. No production account, hosted deployment, provider delivery, or real-data restore was verified.  
 **Decision at audit:** **not ready to accept real user data or activate recovery delivery**. The worker health-check and migration-documentation blockers below were addressed later on 3 November. The dependency gate now has a narrow development-only advisory exception that requires independent review before release. Hosted qualification and external review remain open.
 
-**Launch classification confirmed by the owner:** real user data, non-commercial. Treat this as production operation. Northflank Sandbox is limited to synthetic qualification; select a production-appropriate host or tier before accepting real data. Vercel Hobby's non-commercial condition may fit, subject to its actual account terms and reliability needs.
+**Launch classification confirmed by the owner:** real user data, non-commercial. Treat this as production operation. Render's free tier is limited to synthetic qualification; select a production-appropriate host or tier before accepting real data. Vercel Hobby's non-commercial condition may fit, subject to its actual account terms and reliability needs.
 
 ## 1. System and trust boundaries
 
 ```
 Browser (owner/beneficiary; vault crypto and shares stay here)
     -> Vercel HTTPS app -> same-origin /api rewrite
-    -> Northflank FastAPI -> PostgreSQL
+    -> Render FastAPI -> PostgreSQL
                          -> transactional delivery jobs
-    -> separate Northflank worker -> Resend
+    -> separate Render worker -> Resend
     -> restricted /operations/recovery monitor and offsite backup runner
 ```
 
@@ -44,7 +46,7 @@ No production readiness claim follows from these local passes. The CI workflow i
 
 ### P0 — hosting and recovery decisions
 
-- **The proposed free stack is not a production approval.** [Northflank's current plan documentation](https://northflank.com/docs/v1/application/billing/pricing-on-northflank) says its Developer Sandbox should not be used for production applications. [Vercel Hobby terms](https://vercel.com/legal/terms) restrict it to personal or non-commercial use. Determine whether this is a private synthetic pilot or a real commercial/user-data service; choose eligible tiers or another host before real data. Confirm account limits and expected spend in the actual accounts.
+- **The proposed free stack is not a production approval.** [Render's free tier](https://render.com/docs) says it should not be used for production applications. [Vercel Hobby terms](https://vercel.com/legal/terms) restrict it to personal or non-commercial use. Determine whether this is a private synthetic pilot or a real commercial/user-data service; choose eligible tiers or another host before real data. Confirm account limits and expected spend in the actual accounts.
 - **No verified recovery objective.** [Supabase's backup documentation](https://supabase.com/docs/guides/platform/backups) says automatic daily backups cover Pro, Team, and Enterprise, and recommends offsite exports for Free. The local `backend/restore_rehearsal.py` is deliberately a synthetic loopback PostgreSQL exercise. A scheduled encrypted offsite backup, separate key escrow, fresh-project restore, and measured data-loss/downtime are still required. The proposed 15-minute RPO and four-hour RTO in `DEPLOY.md` remain targets.
 - **Independent cryptographic review is still required.** Custom browser Shamir and vault encryption are central to the product. Review share authenticity, generation/revocation semantics, key wrapping, ciphertext metadata binding, legacy material, and browser network boundaries. The current test suite confirms old quorum non-revocation; product language and release policy must accurately reflect that.
 

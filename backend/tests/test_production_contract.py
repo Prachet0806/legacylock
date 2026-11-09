@@ -2,12 +2,17 @@
 
 import base64
 from pathlib import Path
+from urllib.parse import urlencode
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from config import Settings
+from preflight import PreflightError, check
 
 
 def _production_settings(**overrides: object) -> Settings:
@@ -37,6 +42,70 @@ def test_production_requires_explicit_release_configuration() -> None:
     settings.model_fields_set.remove("release_hold")
     with pytest.raises(RuntimeError, match="release_hold"):
         settings.validate_production()
+
+
+def test_production_api_requires_monitor_credential_without_requiring_it_on_worker() -> None:
+    settings = _production_settings()
+    settings.validate_production()  # the private worker has no operations endpoint
+    with pytest.raises(RuntimeError, match="OPERATIONS_TOKEN"):
+        settings.validate_production_api()
+    settings.operations_token = "o" * 32
+    settings.validate_production_api()
+
+
+def test_worker_preflight_requires_verified_database_certificate_and_payload_key(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    certificate = tmp_path / "database-root.crt"
+    url = "postgresql+psycopg://user:password@db.legacylock.test/vault?" + urlencode(
+        {"sslmode": "verify-full", "sslrootcert": str(certificate)}
+    )
+    settings = _production_settings(
+        database_url=url,
+        delivery_payload_key=base64.b64encode(b"k" * 32).decode(),
+    )
+    with pytest.raises(PreflightError, match="certificate"):
+        check("worker", settings)
+    certificate.write_text("synthetic fixture")
+    check("worker", settings)
+    settings.database_url = (
+        "postgresql+psycopg://user:password@db.legacylock.test/vault?sslmode=verify-full"
+    )
+    monkeypatch.setenv("PGSSLROOTCERT", str(certificate))
+    check("worker", settings)
+    settings.delivery_payload_key = "invalid"
+    with pytest.raises(PreflightError, match="DELIVERY_PAYLOAD_KEY"):
+        check("worker", settings)
+
+
+def test_api_preflight_checks_matching_jwt_keys(tmp_path: Path) -> None:
+    certificate = tmp_path / "database-root.crt"
+    certificate.write_text("synthetic fixture")
+    url = "postgresql+psycopg://user:password@db.legacylock.test/vault?" + urlencode(
+        {"sslmode": "verify-full", "sslrootcert": str(certificate)}
+    )
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    public_pem = private.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    settings = _production_settings(
+        database_url=url,
+        delivery_payload_key=base64.b64encode(b"k" * 32).decode(),
+        operations_token="o" * 32,
+        jwt_private_key_b64=base64.b64encode(private_pem).decode(),
+        jwt_public_key_b64=base64.b64encode(public_pem).decode(),
+    )
+    check("api", settings)
+    settings.jwt_public_key_b64 = SecretStr("invalid")
+    with pytest.raises(PreflightError, match="JWT"):
+        check("api", settings)
 
 
 @pytest.mark.parametrize(

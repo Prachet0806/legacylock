@@ -154,7 +154,6 @@ export default function VaultSetupPage() {
       if (e instanceof Error && /404/.test(e.message)) setReady(true);
       else setErr("Sign in before creating a vault.");
     });
-    return () => lockVault();
   }, [router]);
 
   async function onFinish() {
@@ -215,6 +214,7 @@ export default function VaultSetupPage() {
       setStep(4);
       notify("success", "Draft created. Store every share, then complete setup.");
     } catch (e) {
+      lockVault();
       setErr(e instanceof Error ? e.message : "Setup failed");
     } finally {
       setPassphrase(""); setConfirm("");
@@ -236,7 +236,6 @@ export default function VaultSetupPage() {
           <p className="text-sm leading-relaxed text-muted">
             Choose how many recovery shares to create (n) and how many are needed to
             recover (k). Any k of n shares reconstruct your vault key, locally.
-            Existing vaults keep their key. Resharing never revokes old quorums.
             If setup is interrupted, restart with fresh shares and discard the abandoned set.
           </p>
           <div className="grid grid-cols-2 gap-3">

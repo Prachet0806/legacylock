@@ -20,6 +20,10 @@ Declared build targets: Python 3.12.14, Node 22.23.3, Next 15.5.28, React 18.3.1
 
 Copy `.env.example` into your local environment and configure a development database and JWT pair. Backend settings load `../.env` when run from `backend/`. Generate development keys only; never reuse them in production:
 
+The root `.env` is for a backend run directly or for local Docker Compose. The frontend uses `frontend/.env.local`; copy `frontend/.env.local.example` there for local development. Browser API calls stay at `/api`, and `API_UPSTREAM` points Next to the backend. The local Compose file forwards backend settings from the root `.env`, including `REGISTRATION_INVITE_CODE`. For hosted services, use the separate inventories under `deploy/` and the [deployment contract](DEPLOY.md); keep credentials in the service secret stores.
+
+The production database target is Neon PostgreSQL. Local Compose remains a disposable PostgreSQL development database. Configure the API, worker, and one-off migration job with Neon credentials through their private environments; never put a database URL in `NEXT_PUBLIC_*` or another browser variable.
+
 ```sh
 mkdir -p backend/keys
 openssl genrsa -out backend/keys/jwt_private.pem 2048

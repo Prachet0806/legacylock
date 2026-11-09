@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LegacyLock Phase D deployment qualification (Render + Vercel).
+# LegacyLock deployment qualification (Render API + Vercel frontend).
 # Usage:
 #   scripts/deploy-qualify.sh --api https://api.example.com --app https://app.example.com
 #   QUALIFY_OWNER_PASSWORD=<secret> scripts/deploy-qualify.sh --api ... --app ... --owner-email ...
