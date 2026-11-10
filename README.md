@@ -11,7 +11,7 @@ Current behavior and development commands are below. Hosting, cutover, and remai
 - A check-in explicitly arms heartbeat release. All eligibility writers and release transitions serialize on the vault status row. Grace starts at the missed deadline. Production release is terminal; creation/editing/key changes stop, while owner reading, export and deletion remain available.
 - Registration requires an operator invitation code and email verification. Enrolled beneficiaries can request fresh, single-use email sign-in links without the original invitation or browser cookies. Before release they see waiting status without ciphertext access.
 - Owner and beneficiary cookies represent independent revocable session families. Refresh rotates once, uses cross-tab exclusion where supported and detects replay. Logout and recipient contact replacement invalidate the corresponding authorization.
-- Business mutations stage durable audit and delivery intent in the same transaction. A separate leased worker sends email with provider idempotency, retries and dead-letter evidence. Provider acceptance does not prove inbox delivery. SMS is optional and disabled by default.
+- Business mutations stage durable audit and delivery intent in the same transaction. In the selected Free deployment, the in-process scheduler leases and sends email with provider idempotency, retries and dead-letter evidence; the optional paid topology runs this in a separate worker. Provider acceptance does not prove inbox delivery. SMS is optional and disabled by default.
 - Readiness separates initialization, finalized ceremony, current accepted share assignments, explicit arming and owner-reported local drill evidence. Assignment does not prove share possession or independent recovery.
 
 ## Runtime and development
@@ -22,7 +22,7 @@ Copy `.env.example` into your local environment and configure a development data
 
 The root `.env` is for a backend run directly or for local Docker Compose. The frontend uses `frontend/.env.local`; copy `frontend/.env.local.example` there for local development. Browser API calls stay at `/api`, and `API_UPSTREAM` points Next to the backend. The local Compose file forwards backend settings from the root `.env`, including `REGISTRATION_INVITE_CODE`. For hosted services, use the separate inventories under `deploy/` and the [deployment contract](DEPLOY.md); keep credentials in the service secret stores.
 
-The production database target is Neon PostgreSQL. Local Compose remains a disposable PostgreSQL development database. Configure the API, worker, and one-off migration job with Neon credentials through their private environments; never put a database URL in `NEXT_PUBLIC_*` or another browser variable.
+The selected hosted footprint is Vercel frontend → Render Free API → Neon Free PostgreSQL. The API runs the single-process scheduler, so this topology has no separate worker. Local Compose remains a disposable PostgreSQL development database. Neon credentials belong only in the API's private environment; never put a database URL in `NEXT_PUBLIC_*` or another browser variable. See [DEPLOY.md](DEPLOY.md) for the Free-tier limits, migration procedure, monitoring, and optional paid-worker alternative.
 
 ```sh
 mkdir -p backend/keys
@@ -50,7 +50,7 @@ npm run dev
 
 Set `API_UPSTREAM` before a production build. The rewrite is baked into the build; changing only the runner environment does not rebuild it. Use same-origin `/api` in the browser. Independent cross-site cookie deployment is outside the qualified topology.
 
-For a separate worker, set `BACKGROUND_IN_API=false` on the API and run `python worker.py` from `backend/` with matching database, hold, delivery key ring, epoch and provider settings. The worker needs no JWT private key. Do not run the old notification sender alongside it.
+For the optional paid separate-worker topology, set `BACKGROUND_IN_API=false` on the API and run `python worker.py` from `backend/` with matching database, hold, delivery key ring, epoch and provider settings. The worker needs no JWT private key. Do not run it alongside the in-process scheduler; do not run the old notification sender alongside either mode.
 
 ## Verification
 

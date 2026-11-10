@@ -1,4 +1,4 @@
-"""One-process, recoverable scheduler for the synthetic portfolio deployment.
+"""One-process, recoverable scheduler for the selected Render Free deployment.
 
 PostgreSQL remains authoritative. Signals only shorten delivery latency; the
 startup and periodic sweeps recover missed signals, retries, and expired leases.

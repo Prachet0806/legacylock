@@ -1,5 +1,5 @@
-# DEPRECATED historical example. This blueprint is not production-qualified or
-# used by the supported Northflank/Vercel/Supabase topology in DEPLOY.md.
+# DEPRECATED historical paid Render blueprint. It is not production-qualified
+# and is not used by the current Render Free + Neon Free deployment in DEPLOY.md.
 # Do not create production services from this file.
 # Replace example domains and configure secret files in the Render dashboard.
 # Render Blueprint does not manage secret-file contents. API only gets the JWT pair.

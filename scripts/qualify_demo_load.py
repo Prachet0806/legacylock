@@ -1,5 +1,6 @@
 """Exercise the disposable constrained Compose API without printing credentials."""
 
+import argparse
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -34,6 +35,16 @@ def register() -> tuple[httpx.Response, int]:
             "invite_code": "test-invite-code-123",
         },
     )
+
+
+def single_logins(count: int) -> None:
+    samples = [login() for _ in range(count)]
+    result = {
+        "single_login_statuses": [response.status_code for response, _ in samples],
+        "single_login_ms": [elapsed for _, elapsed in samples],
+    }
+    print(json.dumps(result, indent=2))
+    assert all(status == 200 for status in result["single_login_statuses"]), result
 
 
 def main() -> None:
@@ -101,4 +112,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--single-logins", type=int, metavar="N",
+        help="run N sequential owner logins instead of the concurrent qualification",
+    )
+    args = parser.parse_args()
+    if args.single_logins is None:
+        main()
+    elif args.single_logins < 1:
+        parser.error("--single-logins must be at least 1")
+    else:
+        single_logins(args.single_logins)

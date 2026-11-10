@@ -28,6 +28,6 @@ USER appuser
 EXPOSE 8000
 
 # Serve only. Migrations run before deploy from a trusted local/CI runner
-# (Free demo) or a paid one-off job; never from app boot (see DEPLOY.md).
+# (Render Free) or a paid one-off job; never from app boot (see DEPLOY.md).
 # The application validates TRUSTED_PROXIES; Uvicorn must not rewrite the peer first.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-proxy-headers"]

@@ -1,6 +1,6 @@
 # LegacyLock Comprehensive Remediation Plan
 
-Prepared 11 October 2026. Status: proposed engineering baseline. Scope: all 32 findings in the project critique, incorporating the corrections in the remediation plan review. Those historical source documents are not present in this checkout. Implementation and deployment are separate work; a task closes only when its acceptance evidence is recorded.
+Prepared 11 October 2026. Status: historical proposed engineering baseline. Scope: all 32 findings in the project critique, incorporating the corrections in the remediation plan review. Those historical source documents are not present in this checkout. Implementation and deployment are separate work; a task closes only when its acceptance evidence is recorded. Deployment instructions here predate the current Render Free + Neon Free selection; use [DEPLOY.md](../DEPLOY.md) for the current topology and migration procedure.
 
 LegacyLock should reach a release where a valid check-in prevents stale automatic release, existing secrets survive every supported key operation, beneficiaries can authenticate long after enrollment without owner help, and every release creates recoverable delivery work. Preserve browser encryption and the current stack. Fix shared domain operations and transaction boundaries before adding features.
 

@@ -63,3 +63,33 @@ does not prove Neon autosuspend/reconnect, Render Free startup behavior, real
 Resend delivery, or hosted latency. The 26–42-second concurrent login times
 show that CPU, rather than idle memory, is the practical constraint for this
 small demo instance.
+
+## Repeat qualification at current `optimize` HEAD (local, 2026-11-10)
+
+The disposable Compose fixture was rebuilt at `5c66a63` with PostgreSQL 17,
+one Uvicorn worker, and `536870912` bytes of memory plus `100000000` nanoCPUs
+(`0.1` CPU). The API became healthy after its constrained startup. These
+measurements use synthetic accounts and the test-mode rate-limit bypass.
+
+Three sequential logins returned HTTP 200 in **7.59, 5.09, and 6.80 seconds**.
+After the concurrent workload, twelve more sequential logins all returned
+HTTP 200 in **4.42–7.43 seconds** (median **5.97 seconds**). This measures
+the API login request under the local CPU cap; the browser journey adds its
+own time, and these request times are still slow for a login form. Run
+`python scripts/qualify_demo_load.py --single-logins 3` to
+repeat that measurement. Without the flag, the script runs its concurrent
+login/registration/invitation qualification.
+
+The concurrent qualification returned four HTTP 200 logins in **18.24–32.62
+seconds**, one HTTP 201 registration in **7.58 seconds**, HTTP 200 health
+during load in **284 ms**, and a successful invitation with two new accepted
+outbox jobs. `/scheduler-health` was HTTP 200 afterward.
+
+Linux cgroup v2 `memory.peak` for the API reached **161,525,760 bytes (154.0
+MiB)** over startup, the three initial logins, concurrent work, and twelve
+later logins. `memory.events` recorded zero `oom` and `oom_kill` events;
+Docker reported zero restarts and a healthy container. At the final snapshot,
+`cpu.stat` showed **2,347 throttled periods out of 2,922**. Those cumulative
+counters show substantial CPU contention, while the measured memory peak is
+well below the local 512 MiB limit. They do not establish Render or Neon
+behavior, longer-term resource growth, cold starts, or email delivery.

@@ -2,13 +2,14 @@
 
 **Status:** Historical planning draft; production activation **NOT APPROVED**. Use [the current deployment roadmap](deployment-roadmap-2026-11-03.md) and [deployment contract](../DEPLOY.md) for current gates.
 **Database update, 5 November 2026:** The new empty production database targets Neon. Previous plan details in this historical draft are no longer the deployment instructions.
+**Deployment update, 10 November 2026:** The selected footprint is Render Free + Neon Free with one API service and the in-process scheduler; no separate worker or managed one-off migration job is used. Sections describing the paid separate-worker topology below are retained as historical planning material and are superseded by [DEPLOY.md](../DEPLOY.md).
 **Revised:** 23 October 2026  
-**Proposed hosting:** Render (API and worker), Vercel Hobby (Next.js), Neon PostgreSQL, Resend Free (email), UptimeRobot Free (public uptime checks)  
+**Prior proposed hosting:** Render (API and separate worker), Vercel Hobby (Next.js), Neon PostgreSQL, Resend Free (email), UptimeRobot Free (public uptime checks). This describes the older paid separate-worker plan, not the currently selected Render Free + Neon Free footprint.
 **Dependency review at the time of this draft:** The former `braces` advisory was [withdrawn on 23 October 2026](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm). A later development-only `minimatch` advisory exception is described in the current roadmap; recheck on the final release commit.
 
 ## 1. Decision and deployment boundary
 
-The proposed request path is browser → Vercel HTTPS application origin → same-origin `/api/*` rewrite → Render FastAPI service → Neon PostgreSQL. A **separate, continuously running** Render service runs `python worker.py` for checker passes and delivery. Resend handles transactional email. UptimeRobot checks public liveness, database readiness and the rewrite every five minutes; a separate authenticated, faster alert path checks recovery state. UptimeRobot pings are **not** a keep-awake mechanism for Render.
+The prior proposal's request path was browser → Vercel HTTPS application origin → same-origin `/api/*` rewrite → Render FastAPI service → Neon PostgreSQL, with a **separate, continuously running** Render service running `python worker.py`. The current selected footprint instead uses one Render Free API service with its in-process scheduler and Neon Free PostgreSQL; see [DEPLOY.md](../DEPLOY.md). Render's current Free plan guidance says not to use Free web services for production applications, so this selected footprint is not production-qualified. UptimeRobot pings are **not** a keep-awake mechanism for Render.
 
 Keep `RELEASE_HOLD=true` and `DELIVERY_ENABLED=false` on both API and worker until the release checklist is signed by a named operator and an independent security reviewer. Do not start a real sender, lift the hold, or claim a production RPO/RTO from local tests. A hosted fixture under hold is necessary to collect evidence before activation.
 
