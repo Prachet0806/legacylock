@@ -162,6 +162,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [authError, setAuthError] = useState("");
   const [sessionVersion, setSessionVersion] = useState(0);
   useEffect(() => { const changed=()=>{setAuthed(false);setSessionVersion(v=>v+1);}; window.addEventListener("legacylock-session-changed",changed); return ()=>window.removeEventListener("legacylock-session-changed",changed); }, []);
+  useEffect(() => {
+    const expired = (event: Event) => {
+      const principal = (event as CustomEvent<"owner" | "beneficiary">).detail;
+      if (principal !== (pathname === "/recovery" ? "beneficiary" : "owner")) return;
+      setAuthed(false);
+      router.replace(pathname === "/recovery" ? "/access/login" : "/");
+    };
+    window.addEventListener("legacylock-session-expired", expired);
+    return () => window.removeEventListener("legacylock-session-expired", expired);
+  }, [pathname, router]);
   const [principal, setPrincipal] = useState<"owner" | "beneficiary">("owner");
   const previousPath = useRef(pathname);
 

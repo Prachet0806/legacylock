@@ -1,10 +1,11 @@
 import {test, expect} from "@playwright/test";
-import {requireLiveBackend} from "./e2e-guard";
+import {freshOwner, requireLiveBackend} from "./e2e-guard";
 
 test("two expired tabs share one refresh; wrong action password preserves login; logout reaches both tabs", async ({context, request}) => {
+  test.setTimeout(120000);
   await requireLiveBackend(request,"Session concurrency");
   const password=process.env.E2E_OWNER_PASSWORD??"DevPassword123456";
-  const email=process.env.E2E_OWNER_EMAIL??"owner@example.com";
+  const email=await freshOwner(request,password);
   const origin=process.env.PLAYWRIGHT_BASE_URL??"http://localhost:3000";
   const login=await context.request.post(`${origin}/api/auth/login`,{data:{email,password},headers:{Origin:origin}});
   expect(login.ok()).toBe(true);
@@ -16,6 +17,23 @@ test("two expired tabs share one refresh; wrong action password preserves login;
   await expect(first.getByRole("link",{name:"Vault",exact:true}).first()).toBeVisible();
   await expect(second.getByRole("link",{name:"Vault",exact:true}).first()).toBeVisible();
   expect(refreshes).toBe(1);
+
+  // A new owner has no recovery material. Complete the first-time ceremony so
+  // the heartbeat page exposes its password-confirmed trigger action.
+  await first.getByRole("link",{name:"Start vault setup"}).click();
+  await expect(first).toHaveURL(/\/vault\/setup$/);
+  await first.getByRole("button",{name:"Continue"}).click();
+  await first.getByLabel("Vault passphrase").fill("session-concurrency-passphrase-1234");
+  await first.getByLabel("Confirm passphrase").fill("session-concurrency-passphrase-1234");
+  await first.getByRole("button",{name:"Continue"}).click();
+  await first.getByRole("button",{name:"Generate vault key"}).click();
+  for (const index of [1, 2, 3]) {
+    await first.getByRole("button",{name:`Go to share ${index}`,exact:true}).click();
+    await expect(first.getByTestId(`share-${index}`)).toBeVisible();
+    await first.getByRole("button",{name:"I've stored this safely",exact:true}).click();
+  }
+  await first.getByRole("button",{name:"Complete setup"}).click();
+  await expect(first).toHaveURL(/\/vault$/);
   await first.goto("/heartbeat");
   await first.getByRole("button",{name:/trigger vault/i}).click();
   await first.getByLabel("Login password").fill("incorrect-password-1234");

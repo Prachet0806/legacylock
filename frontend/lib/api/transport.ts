@@ -16,6 +16,16 @@ export class ApiError extends Error {
   ) { super(message); this.name="ApiError"; }
 }
 let channel: BroadcastChannel | null = null;
+type SessionPrincipal = "owner" | "beneficiary";
+class SessionExpiredError extends Error {}
+
+function sessionExpired(principal: SessionPrincipal, broadcast = true): void {
+  lockVault();
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("legacylock-session-expired", { detail: principal }));
+  if (broadcast) channel?.postMessage({ kind: "session-expired", principal });
+}
+
 export function sessionChanged(): void {
   lockVault();
   if (typeof window !== "undefined") {
@@ -29,6 +39,9 @@ if (typeof window !== "undefined" && typeof BroadcastChannel !== "undefined") {
     if (event.data?.kind === "identity-changed") {
       lockVault();
       window.dispatchEvent(new Event("legacylock-session-changed"));
+    } else if (event.data?.kind === "session-expired"
+      && (event.data.principal === "owner" || event.data.principal === "beneficiary")) {
+      sessionExpired(event.data.principal, false);
     }
   };
 }
@@ -101,6 +114,7 @@ async function fetchWithRefresh<T>(
         const r = await rawFetch(refreshPath, {method:"POST"});
         if (!r.ok) {
           if (r.status === 429) throw await errorFor(r);
+          if (r.status === 401) throw new SessionExpiredError("Sign in again");
           throw new Error("Sign in again");
         }
       };
@@ -109,7 +123,12 @@ async function fetchWithRefresh<T>(
         : refresh()).finally(() => flights.delete(refreshPath));
       flights.set(refreshPath, flight);
     }
-    try { await flight; } catch (e) { sessionChanged(); throw e; }
+    try { await flight; } catch (e) {
+      if (e instanceof SessionExpiredError) {
+        sessionExpired(refreshPath === "/auth/refresh" ? "owner" : "beneficiary");
+      }
+      throw e;
+    }
     assertEpoch(before);
     const retry = await rawFetch(path, init);
     assertEpoch(before);

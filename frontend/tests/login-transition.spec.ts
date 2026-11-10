@@ -29,10 +29,9 @@ test("successful login shows an opening state until the dashboard is ready", asy
     await page.getByLabel("Password", { exact: true }).fill("example-password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 
-    await expect(page.getByText("Signed in. Opening your vault…")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Sign in to your vault" })).toHaveCount(0);
     await expect(page).toHaveURL(/\/home$/);
-    await expect(page.getByText("Opening your vault…", { exact: true })).toBeVisible();
+    await expect(page.getByRole("status").getByText("Opening your vault…", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to your vault" })).toHaveCount(0);
 
     releaseMe?.();
     await expect(page.getByRole("heading", { name: "Your vault" })).toBeVisible();
