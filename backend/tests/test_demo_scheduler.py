@@ -116,21 +116,105 @@ def test_next_due_covers_retry_and_expired_lease() -> None:
     assert timedelta(seconds=30) < due - datetime.now(UTC) < timedelta(minutes=2)
 
 
-def test_next_due_skips_disabled_delivery_and_held_release(
-    monkeypatch: MonkeyPatch,
+@pytest.mark.parametrize("kind", ["released", "grace_warning"])
+@pytest.mark.parametrize("release_hold", [True, False])
+def test_release_retry_due_matches_claim_eligibility(
+    monkeypatch: MonkeyPatch, kind: str, release_hold: bool,
 ) -> None:
     settings = get_settings()
+    scheduled = datetime.now(UTC) + timedelta(seconds=2)
     with SessionLocal() as db:
-        _queue(db, "held-release", kind="released")
+        ident = _queue(db, f"{kind}-{release_hold}", kind=kind)
+        db.flush()
+        db.query(DeliveryJob).filter_by(id=ident).update({
+            "state": "RETRY_WAIT",
+            "due_at": scheduled,
+        })
         db.commit()
-    monkeypatch.setattr(settings, "release_hold", True)
-    assert demo_scheduler.DemoScheduler._next_delivery_due() is None
+
+    monkeypatch.setattr(settings, "release_hold", release_hold)
+    next_due = demo_scheduler.DemoScheduler._next_delivery_due()
+    with SessionLocal() as db:
+        if release_hold:
+            assert next_due is None
+            assert claim(db, now=scheduled + timedelta(seconds=1)) == []
+        else:
+            assert next_due is not None
+            assert abs((next_due - scheduled).total_seconds()) < 1
+            assert claim(db, now=scheduled - timedelta(microseconds=1)) == []
+            assert claim(db, now=scheduled)
+
+
+def test_next_due_skips_disabled_delivery(monkeypatch: MonkeyPatch) -> None:
+    settings = get_settings()
     with SessionLocal() as db:
         _queue(db, "ordinary-verification")
         db.commit()
-    assert demo_scheduler.DemoScheduler._next_delivery_due() is not None
     monkeypatch.setattr(settings, "delivery_enabled", False)
     assert demo_scheduler.DemoScheduler._next_delivery_due() is None
+
+
+def test_release_retry_wakes_scheduler_at_due_time(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    settings = get_settings()
+    monkeypatch.setattr(settings, "release_hold", False)
+    monkeypatch.setattr(settings, "delivery_enabled", True)
+    monkeypatch.setattr(
+        demo_scheduler.DemoScheduler, "_heartbeat_pass", staticmethod(lambda: True)
+    )
+    scheduled = datetime.now(UTC) + timedelta(seconds=1)
+    with SessionLocal() as db:
+        ident = _queue(db, "release-retry-wake", kind="released")
+        db.flush()
+        db.query(DeliveryJob).filter_by(id=ident).update({
+            "state": "RETRY_WAIT",
+            "due_at": scheduled,
+        })
+        db.commit()
+
+    original_next_due = demo_scheduler.DemoScheduler._next_delivery_due
+    due_reads = 0
+    observed_due: list[datetime | None] = []
+
+    def next_due_once() -> datetime | None:
+        nonlocal due_reads
+        due_reads += 1
+        due = original_next_due() if due_reads == 1 else None
+        observed_due.append(due)
+        return due
+
+    monkeypatch.setattr(
+        demo_scheduler.DemoScheduler, "_next_delivery_due", staticmethod(next_due_once)
+    )
+    pass_times: list[datetime] = []
+    second_pass = threading.Event()
+
+    def record_delivery_pass(_self: demo_scheduler.DemoScheduler) -> bool:
+        pass_times.append(datetime.now(UTC))
+        if len(pass_times) == 2:
+            second_pass.set()
+        return True
+
+    monkeypatch.setattr(demo_scheduler.DemoScheduler, "_delivery_pass", record_delivery_pass)
+
+    async def run() -> None:
+        scheduler = demo_scheduler.DemoScheduler()
+        scheduler.start()
+        try:
+            completed = await asyncio.to_thread(second_pass.wait, 4)
+            assert completed, "Scheduler did not wake for the future release retry"
+        finally:
+            await scheduler.stop()
+
+    asyncio.run(run())
+    assert len(pass_times) >= 2
+    assert observed_due and observed_due[0] is not None
+    assert abs((observed_due[0] - scheduled).total_seconds()) < 1
+    assert pass_times[1] >= scheduled, (pass_times, observed_due, settings.demo_check_interval_seconds)
+    assert pass_times[1] - scheduled < timedelta(seconds=3)
+    with SessionLocal() as db:
+        assert _job(db, ident).state == "RETRY_WAIT"
 
 
 def test_startup_recovers_pending_job_and_due_retry() -> None:

@@ -21,6 +21,9 @@ const securityHeaders = [
 
 const nextConfig = {
   output: "standalone",
+  // The repository root contains Neon CLI configuration and a separate
+  // package manifest; keep frontend tracing scoped to this Next.js app.
+  outputFileTracingRoot: process.cwd(),
   devIndicators: false,
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];

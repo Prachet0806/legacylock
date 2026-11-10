@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, true
 
 from config import get_settings
 from models import Beneficiary, BusinessEvent, DeliveryAttempt, DeliveryJob, VaultStatus
@@ -128,19 +128,26 @@ def cancel_warnings(db, vault_id):
     )
 
 
+def delivery_eligibility_filter(db):
+    """Return the job filter shared by scheduler timing and outbox claims."""
+    if not get_settings().release_hold:
+        return true()
+    permitted = db.query(BusinessEvent.id).filter(
+        ~BusinessEvent.kind.like("grace%"), BusinessEvent.kind != "released"
+    )
+    return DeliveryJob.event_id.in_(permitted)
+
+
 def claim(db, now=None, limit=20):
     now = now or datetime.now(UTC)
     due = or_(
         and_(DeliveryJob.state.in_(["READY", "RETRY_WAIT"]), DeliveryJob.due_at <= now),
         and_(DeliveryJob.state == "CLAIMED", DeliveryJob.lease_until <= now),
     )
-    permitted = db.query(BusinessEvent.id).filter(
-        ~BusinessEvent.kind.like("grace%"), BusinessEvent.kind != "released"
-    )
     candidates = (
         db.query(DeliveryJob)
         .filter(due)
-        .filter(DeliveryJob.event_id.in_(permitted) if get_settings().release_hold else True)
+        .filter(delivery_eligibility_filter(db))
         .order_by(DeliveryJob.due_at, DeliveryJob.id)
         .with_for_update(skip_locked=True)
         .limit(min(limit, 20))

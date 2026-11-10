@@ -11,15 +11,15 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from threading import Lock
 
-from sqlalchemy import event, func, text, true
+from sqlalchemy import event, func, text
 from sqlalchemy.orm import Session, SessionTransaction
 
 from config import get_settings
 from db import SessionLocal, engine
-from models import BusinessEvent, DeliveryJob
+from models import DeliveryJob
 from services.heartbeat_checker import check_heartbeat
 from services.operations import checkpoint
-from services.outbox import utc, work_once
+from services.outbox import delivery_eligibility_filter, utc, work_once
 
 logger = logging.getLogger("legacylock.demo_scheduler")
 _LOCK_ID = 663928112
@@ -119,18 +119,12 @@ class DemoScheduler:
         if not settings.delivery_enabled:
             return None
         with SessionLocal() as db:
-            permitted = db.query(BusinessEvent.id).filter(
-                ~BusinessEvent.kind.like("grace%"), BusinessEvent.kind != "released"
-            )
-            permitted_job = (
-                DeliveryJob.event_id.in_(permitted) if settings.release_hold else true()
-            )
             ready = db.query(func.min(DeliveryJob.due_at)).filter(
-                permitted_job,
+                delivery_eligibility_filter(db),
                 DeliveryJob.state.in_(["READY", "RETRY_WAIT"])
             ).scalar()
             claimed = db.query(func.min(DeliveryJob.lease_until)).filter(
-                permitted_job,
+                delivery_eligibility_filter(db),
                 DeliveryJob.state == "CLAIMED", DeliveryJob.lease_until.isnot(None)
             ).scalar()
         candidates = [utc(value) for value in (ready, claimed) if value is not None]
