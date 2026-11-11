@@ -70,18 +70,6 @@ def release_locked(db, vs, reason, now, actor_type="system", actor_id=0):
             "already distributed to you. LegacyLock does not send or store shares.",
             beneficiary=ben,
         )
-        if get_settings().sms_enabled and ben.phone:
-            enqueue(
-                db,
-                business,
-                f"beneficiary:{ben.id}",
-                ben.phone,
-                "",
-                "LegacyLock vault access is released. Sign in using your email; use your "
-                "separately stored shares.",
-                beneficiary=ben,
-                channel="sms",
-            )
     record_audit(
         db,
         vs.vault_id,

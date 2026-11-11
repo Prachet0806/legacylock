@@ -84,6 +84,7 @@ class DeliveryJob(Base):
             "state IN ('READY','CLAIMED','RETRY_WAIT','ACCEPTED','DEAD','CANCELLED')",
             name="ck_delivery_state",
         ),
+        CheckConstraint("channel IN ('email','legacy')", name="ck_delivery_channel"),
     )
 
 

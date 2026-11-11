@@ -44,7 +44,7 @@ def inventory(db):
         "invalid_message_envelope": 0,
         "oversized_existing_message": 0,
         "uninitialized_with_messages": 0,
-        "schema_revision_mismatch": int(schema_revision != "0008_delivery_attempts"),
+        "schema_revision_mismatch": int(schema_revision != "0010_email_only_delivery"),
     }
     for vault in db.query(Vault).order_by(Vault.id).yield_per(100):
         bundle = [
@@ -108,7 +108,7 @@ def inventory(db):
 
     return {
         "schema_revision": schema_revision,
-        "schema_contract": "0008_delivery_attempts",
+        "schema_contract": "0010_email_only_delivery",
         "vaults": db.query(Vault).count(),
         "messages": db.query(VaultMessage).count(),
         "beneficiaries": db.query(Beneficiary).count(),

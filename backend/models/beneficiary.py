@@ -23,7 +23,6 @@ class Beneficiary(Base):
     vault_id = Column(Integer, ForeignKey("vault.id"), nullable=False, index=True)
     name = Column(String(200), nullable=False)
     email = Column(String(320), nullable=False)
-    phone = Column(String(30), nullable=True)
     share_index = Column(Integer, nullable=True)
     contact_revision = Column(Integer, nullable=False, default=1, server_default="1")
     ceremony_generation = Column(String(32), nullable=True)

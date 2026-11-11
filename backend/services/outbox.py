@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from config import get_settings
 from models import Beneficiary, BusinessEvent, DeliveryAttempt, DeliveryJob, VaultStatus
@@ -86,7 +88,6 @@ def enqueue(
     body,
     *,
     beneficiary=None,
-    channel="email",
     expires=None,
 ):
     job = DeliveryJob(
@@ -95,7 +96,7 @@ def enqueue(
         recipient_key=recipient_key,
         beneficiary_id=beneficiary.id if beneficiary else None,
         contact_revision=beneficiary.contact_revision if beneficiary else None,
-        channel=channel,
+        channel="email",
         state="READY",
         attempts=0,
         due_at=datetime.now(UTC),
@@ -103,6 +104,8 @@ def enqueue(
     )
     job.payload = protect(job, {"to": to, "subject": subject, "body": body})
     db.add(job)
+    transaction = db.get_nested_transaction() or db.get_transaction()
+    db.info.setdefault("legacylock_outbox_enqueued", set()).add(transaction)
     return job
 
 
@@ -126,19 +129,27 @@ def cancel_warnings(db, vault_id):
     )
 
 
+def delivery_eligibility_filter(db: Session) -> ColumnElement[bool]:
+    """Return the job filter shared by scheduler timing and outbox claims."""
+    email_only = DeliveryJob.channel == "email"
+    if not get_settings().release_hold:
+        return email_only
+    permitted = db.query(BusinessEvent.id).filter(
+        ~BusinessEvent.kind.like("grace%"), BusinessEvent.kind != "released"
+    )
+    return and_(email_only, DeliveryJob.event_id.in_(permitted))
+
+
 def claim(db, now=None, limit=20):
     now = now or datetime.now(UTC)
     due = or_(
         and_(DeliveryJob.state.in_(["READY", "RETRY_WAIT"]), DeliveryJob.due_at <= now),
         and_(DeliveryJob.state == "CLAIMED", DeliveryJob.lease_until <= now),
     )
-    permitted = db.query(BusinessEvent.id).filter(
-        ~BusinessEvent.kind.like("grace%"), BusinessEvent.kind != "released"
-    )
     candidates = (
         db.query(DeliveryJob)
         .filter(due)
-        .filter(DeliveryJob.event_id.in_(permitted) if get_settings().release_hold else True)
+        .filter(delivery_eligibility_filter(db))
         .order_by(DeliveryJob.due_at, DeliveryJob.id)
         .with_for_update(skip_locked=True)
         .limit(min(limit, 20))
@@ -167,7 +178,7 @@ def claim(db, now=None, limit=20):
 
 
 async def deliver_one(job_id, token, session_factory):
-    from services.notifications import deliver_email, deliver_sms
+    from services.notifications import deliver_email
 
     db = session_factory()
     try:
@@ -181,6 +192,11 @@ async def deliver_one(job_id, token, session_factory):
             .first()
         )
         if not job:
+            return
+        if job.channel != "email":
+            job.state, job.payload, job.last_error = "CANCELLED", None, "unsupported_channel"
+            job.claim_token, job.lease_until = None, None
+            db.commit()
             return
         business = db.get(BusinessEvent, job.event_id)
         if get_settings().release_hold and (
@@ -217,16 +233,11 @@ async def deliver_one(job_id, token, session_factory):
             job.state, job.last_error, job.claim_token = "DEAD", "payload_unavailable", None
             db.commit()
             return
-        channel = job.channel
         # A persisted start can remain incomplete after process death or timeout.
         # It means a call was about to start, never proof of inbox delivery.
         db.add(DeliveryAttempt(id=token, job_id=job.id, started_at=datetime.now(UTC)))
         db.commit()  # network I/O runs without a database transaction
-        result = await (
-            deliver_email(data["to"], data["subject"], data["body"], job_id)
-            if channel == "email"
-            else deliver_sms(data["to"], data["body"], job_id)
-        )
+        result = await deliver_email(data["to"], data["subject"], data["body"], job_id)
         attempt = db.get(DeliveryAttempt, token)
         if attempt:
             attempt.completed_at, attempt.outcome = (
@@ -269,7 +280,7 @@ async def deliver_one(job_id, token, session_factory):
         db.close()
 
 
-def work_once(session_factory, limit=20):
+def work_once(session_factory, limit=20, concurrency=4):  # noqa: ANN001 - legacy untyped API
     if not get_settings().delivery_enabled:
         return 0
     db = session_factory()
@@ -303,7 +314,7 @@ def work_once(session_factory, limit=20):
         db.close()
 
     async def run():
-        semaphore = asyncio.Semaphore(4)
+        semaphore = asyncio.Semaphore(concurrency)
 
         async def bounded(job_id, token):
             async with semaphore:

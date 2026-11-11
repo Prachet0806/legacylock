@@ -111,7 +111,7 @@ Audit event
  ↓
 Notification service
  ↓
-Email/SMS/mock
+Email
 ```
 
 Notification failure must not roll back an already committed trigger state.

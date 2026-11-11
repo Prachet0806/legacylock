@@ -26,7 +26,7 @@
 
 ## ADR-004 — No Server-Mediated Share Delivery
 
-**Decision:** LegacyLock never emails or SMSes raw Shamir shares.
+**Decision:** LegacyLock never transmits raw Shamir shares through its notification system.
 
 **Reason:** The platform should not become the delivery channel for the secret that protects the vault.
 

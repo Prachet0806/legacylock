@@ -1,6 +1,7 @@
 "use client";
 
 // Vault message CRUD — encrypts locally before POST, decrypts locally after GET.
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
@@ -105,6 +106,17 @@ export default function VaultPage() {
   const [showForm, setShowForm] = useState(false);
   const [loadingList, setLoadingList] = useState(false);
   const [err, setErr] = useState("");
+  const [vaultPresence, setVaultPresence] = useState<"checking" | "missing" | "ready" | "error">("checking");
+  const [presenceVersion, setPresenceVersion] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setVaultPresence("checking");
+    getCryptoMaterial()
+      .then((material) => { if (!cancelled) setVaultPresence(material.wrapped_vmk ? "ready" : "missing"); })
+      .catch(() => { if (!cancelled) setVaultPresence("error"); });
+    return () => { cancelled = true; };
+  }, [presenceVersion]);
 
   async function refresh(beforeId?:number) {
     const epoch=currentEpoch();
@@ -130,7 +142,9 @@ export default function VaultPage() {
       assertEpoch(before);
       bindVault(`owner:${me.id}`, mat.material_revision);
       if (!mat.wrapped_vmk) {
-        throw new Error("No vault yet — set one up first.");
+        setVaultPresence("missing");
+        setShowUnlockForm(false);
+        return;
       }
       if (!mat.vmk_kdf_salt || !mat.vmk_kdf_parameters) throw new Error("Stored wrapping metadata is incomplete. Preserve your backup and contact support.");
       await unlockVault(passphrase, {
@@ -234,6 +248,18 @@ export default function VaultPage() {
   }, [filtered]);
 
   if (!unlocked) {
+    if (vaultPresence === "checking") return <main className="mx-auto max-w-md px-4 py-10" aria-busy="true"><p className="supporting">Checking vault setup…</p></main>;
+    if (vaultPresence === "error") return <main className="mx-auto max-w-md px-4 py-10"><div className="surface-lg"><h1 className="section-title">Vault status unavailable</h1><p className="supporting mt-2">We could not check whether this vault has been set up.</p><button type="button" className="btn-secondary mt-4" onClick={() => setPresenceVersion((version) => version + 1)}>Try again</button></div></main>;
+    if (vaultPresence === "missing") return (
+      <main className="mx-auto max-w-md px-4 py-10">
+        <div className="surface-lg flex flex-col items-center gap-3 py-10 text-center">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-raised"><KeyRound className="h-6 w-6 text-accent" /></span>
+          <h1 className="text-xl font-medium">Set up your vault</h1>
+          <p className="max-w-xs text-sm leading-relaxed text-muted">Create your vault key and save your recovery shares before storing private messages.</p>
+          <Link className="btn-primary mt-2 w-full" href="/vault/setup">Start vault setup</Link>
+        </div>
+      </main>
+    );
     return (
       <main className="mx-auto max-w-md px-4 py-10">
         <div className="surface-lg flex flex-col items-center gap-3 py-10 text-center">

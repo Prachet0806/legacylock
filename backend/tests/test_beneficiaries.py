@@ -57,20 +57,6 @@ class TestBeneficiaryCRUD:
         assert res.status_code == 201
         assert "id" in res.json()
 
-    def test_add_with_phone(self, client, auth):
-        res = client.post(
-            "/beneficiaries",
-            json={"name": "Bob", "email": "bob@test.com", "phone": "+15551234567"},
-            headers=auth,
-        )
-        assert res.status_code == 201
-        ben_id = res.json()["id"]
-        # Verify phone is stored in list
-        items = client.get("/beneficiaries", headers=auth).json()
-        match = next((b for b in items if b["id"] == ben_id), None)
-        assert match is not None
-        assert match["phone"] == "+15551234567"
-
     def test_list_beneficiaries(self, client, auth):
         client.post("/beneficiaries", json={"name": "Alice", "email": "a@t.com"}, headers=auth)
         client.post("/beneficiaries", json={"name": "Bob", "email": "b@t.com"}, headers=auth)
@@ -82,11 +68,6 @@ class TestBeneficiaryCRUD:
         res = client.get("/beneficiaries", headers=auth)
         assert res.status_code == 200
         assert res.json() == []
-
-    def test_phone_optional(self, client, auth):
-        client.post("/beneficiaries", json={"name": "Alice", "email": "a@t.com"}, headers=auth)
-        items = client.get("/beneficiaries", headers=auth).json()
-        assert items[0]["phone"] is None
 
     def test_delete_beneficiary(self, client, auth):
         post = client.post(
@@ -105,11 +86,11 @@ class TestBeneficiaryCRUD:
     def test_response_includes_all_fields(self, client, auth):
         client.post(
             "/beneficiaries",
-            json={"name": "Alice", "email": "a@t.com", "phone": "123"},
+            json={"name": "Alice", "email": "a@t.com"},
             headers=auth,
         )
         item = client.get("/beneficiaries", headers=auth).json()[0]
-        for field in ("id", "name", "email", "phone", "created_at"):
+        for field in ("id", "name", "email", "created_at"):
             assert field in item
 
 
@@ -126,14 +107,6 @@ class TestBeneficiaryValidation:
         res = client.post(
             "/beneficiaries",
             json={"name": "x" * 201, "email": "a@b.com"},
-            headers=auth,
-        )
-        assert res.status_code == 422
-
-    def test_phone_too_long(self, client, auth):
-        res = client.post(
-            "/beneficiaries",
-            json={"name": "Alice", "email": "a@b.com", "phone": "1" * 31},
             headers=auth,
         )
         assert res.status_code == 422

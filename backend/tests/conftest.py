@@ -16,6 +16,7 @@ os.environ["DATABASE_URL"] = os.environ.get(
     ("postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_test"),
 )
 os.environ["ALLOWED_ORIGINS"] = "http://localhost:3000"
+os.environ["ALLOWED_HOSTS"] = "testserver,localhost,127.0.0.1"
 os.environ["HEARTBEAT_CHECK_INTERVAL"] = "999999"
 os.environ["HEARTBEAT_ENABLED"] = "false"
 os.environ["REGISTRATION_INVITE_CODE"] = "test-invite-code-123"

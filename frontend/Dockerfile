@@ -4,12 +4,12 @@
 # the Next rewrite, or configure the edge rewrite described in DEPLOY.md.
 ARG NEXT_PUBLIC_API_URL=""
 
-FROM node:22.23.3-alpine AS deps
+FROM node:24.22.2-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-FROM node:22.23.3-alpine AS builder
+FROM node:24.22.2-alpine AS builder
 ARG NEXT_PUBLIC_API_URL=""
 ARG API_UPSTREAM="http://backend:8000"
 WORKDIR /app
@@ -20,7 +20,7 @@ ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV API_UPSTREAM=${API_UPSTREAM}
 RUN npm run build
 
-FROM node:22.23.3-alpine AS runner
+FROM node:24.22.2-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup

@@ -49,8 +49,11 @@ class Settings(BaseSettings):
     delivery_payload_key_id: str = "v1"
     delivery_payload_keys: str = "{}"
     auth_epoch: str = "initial"
-    sms_enabled: bool = False
     background_in_api: bool = True
+    task_mode: Literal["separate_worker", "single_process_demo"] = "separate_worker"
+    demo_check_interval_seconds: int = Field(default=1800, ge=300, le=86400)
+    demo_delivery_batch_size: int = Field(default=5, ge=1, le=20)
+    demo_argon2_concurrency: int = Field(default=1, ge=1, le=4)
     db_pool_size: int = Field(default=3, ge=1, le=20)
     db_max_overflow: int = Field(default=0, ge=0, le=20)
     db_pool_timeout: int = Field(default=10, ge=1, le=60)
@@ -91,6 +94,10 @@ class Settings(BaseSettings):
 
     def validate_production(self) -> None:
         """Reject implicit development defaults before any production work starts."""
+        if self.task_mode == "single_process_demo" and self.background_in_api:
+            raise RuntimeError("Single-process demo mode requires BACKGROUND_IN_API=false")
+        if self.task_mode == "single_process_demo" and self.db_pool_size < 2:
+            raise RuntimeError("Single-process demo mode requires DB_POOL_SIZE >= 2")
         if self.environment != "production":
             return
         required = {
@@ -102,22 +109,29 @@ class Settings(BaseSettings):
             "allowed_origins",
             "allowed_hosts",
             "heartbeat_enabled",
-            "sms_enabled",
             "notification_email_from",
         }
         missing = required - self.model_fields_set
         if missing:
             names = ", ".join(sorted(missing))
             raise RuntimeError(f"Explicit production settings required: {names}")
-        if self.background_in_api or not self.heartbeat_enabled or self.sms_enabled:
+        if self.background_in_api or not self.heartbeat_enabled:
             raise RuntimeError(
-                "Production requires an independent checker/delivery worker and SMS disabled"
+                "Production requires BACKGROUND_IN_API=false and heartbeat enabled"
             )
+        if self.task_mode == "single_process_demo" and "task_mode" not in self.model_fields_set:
+            raise RuntimeError("Single-process demo mode must be selected explicitly")
         if not self.auth_epoch.strip() or self.auth_epoch == "initial":
             raise RuntimeError("Production AUTH_EPOCH must be a fresh explicit value")
         self._validate_production_network()
         if not self.resend_api_key or not self.notification_email_from.strip():
             raise RuntimeError("Production email credentials and sender are required")
+
+    def validate_production_api(self) -> None:
+        """The public API must support its restricted recovery monitor."""
+        self.validate_production()
+        if self.environment == "production" and len(self.operations_token) < 32:
+            raise RuntimeError("Production OPERATIONS_TOKEN must be at least 32 characters")
 
     def _validate_production_network(self) -> None:
         if not _is_https_origin(self.frontend_url):

@@ -1,6 +1,6 @@
-"""Notification service — email and SMS dispatch.
+"""Notification service — email dispatch.
 
-Uses Resend for email and Twilio for SMS.
+Uses Resend for email.
 Falls back to logging when credentials are not configured.
 """
 
@@ -54,17 +54,6 @@ async def deliver_email(to: str, subject: str, body: str, idempotency_key: str) 
         )
     except (httpx.TimeoutException, httpx.NetworkError):
         return DeliveryResult(False, True, "email_outcome_uncertain")
-
-
-async def deliver_sms(to: str, body: str, idempotency_key: str) -> DeliveryResult:
-    from config import get_settings
-
-    if not get_settings().sms_enabled:
-        return DeliveryResult(False, False, "sms_disabled")
-    # Twilio Messages has no assumed send-idempotency guarantee. Uncertain
-    # requests require operator reconciliation rather than automatic duplicates.
-    ok = await send_sms(to, body)
-    return DeliveryResult(ok, False, None if ok else "sms_reconcile_required")
 
 
 # ---------------------------------------------------------------------------
@@ -132,40 +121,4 @@ async def send_email(to: str, subject: str, body: str, html_body: str | None = N
             return False
     except Exception:
         logger.exception("Failed to send email")
-        return False
-
-
-# ---------------------------------------------------------------------------
-# SMS — Twilio (config read lazily for testability)
-# ---------------------------------------------------------------------------
-
-
-async def send_sms(to: str, message: str) -> bool:
-    """Send an SMS. Returns True on success."""
-    import os as _os
-
-    sid = _os.environ.get("TWILIO_ACCOUNT_SID", "")
-    token = _os.environ.get("TWILIO_AUTH_TOKEN", "")
-    from_number = _os.environ.get("TWILIO_FROM_NUMBER", "")
-    if not sid or not token:
-        logger.warning("SMS unavailable: credentials missing")
-        return False
-
-    try:
-        import httpx
-
-        async with httpx.AsyncClient() as client:
-            res = await client.post(
-                f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
-                auth=(sid, token),
-                data={"From": from_number, "To": to, "Body": message},
-            )
-        if res.status_code == 201:
-            logger.info("SMS sent")
-            return True
-        else:
-            logger.error("Twilio error %s", res.status_code)
-            return False
-    except Exception:
-        logger.exception("Failed to send SMS")
         return False

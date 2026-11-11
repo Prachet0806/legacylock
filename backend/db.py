@@ -10,10 +10,10 @@ settings = get_settings()
 
 
 def normalize_database_url(url: str) -> str:
-    """Accept managed-Postgres `postgres://` URLs (e.g. Render) as psycopg.
+    """Accept managed-Postgres `postgres://` and `postgresql://` URLs as psycopg.
 
-    Render injects `postgres://user:pass@host/db`; SQLAlchemy+psycopg needs
-    `postgresql+psycopg://`. Pass through everything else unchanged.
+    Neon supplies `postgresql://` URLs; SQLAlchemy+psycopg needs the
+    `postgresql+psycopg://` driver. Pass through everything else unchanged.
     """
     if url.startswith("postgres://"):
         return "postgresql+psycopg://" + url[len("postgres://") :]

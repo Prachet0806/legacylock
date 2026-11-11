@@ -13,15 +13,15 @@ import {
 import { login } from "../lib/api";
 import { resendVerification } from "../lib/api/public";
 import { ApiError } from "../lib/api/transport";
-import { useToast } from "../components/toast";
+import { HomeLoading } from "../components/home-loading";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { notify } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [opening, setOpening] = useState(false);
   const [err, setErr] = useState("");
   const [unverified, setUnverified] = useState(false);
   const [resent, setResent] = useState(false);
@@ -33,10 +33,7 @@ export default function LoginPage() {
     setBusy(true);
     try {
       await login(email, password);
-      notify("success", "Logged in.");
-      router.push("/home");
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "";
       if (e instanceof ApiError && e.status === 429) {
         setErr(e.message);
       } else if (e instanceof ApiError && e.status === 403 && e.message === "Email not verified") {
@@ -47,9 +44,12 @@ export default function LoginPage() {
       } else {
         setErr("Invalid email or password.");
       }
-    } finally {
       setBusy(false);
+      return;
     }
+    setPassword("");
+    setOpening(true);
+    router.replace("/home");
   }
 
   async function onResend() {
@@ -57,6 +57,8 @@ export default function LoginPage() {
     await resendVerification(email.trim()).catch(() => undefined);
     setResent(true);
   }
+
+  if (opening) return <HomeLoading message="Signed in. Opening your vault…" />;
 
   return (
     <main className="public-auth mx-auto grid min-h-screen w-full lg:grid-cols-[3fr_2fr]">

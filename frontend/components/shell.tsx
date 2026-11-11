@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   HeartPulse,
   LayoutDashboard,
@@ -10,19 +10,24 @@ import {
   Lock,
   LockOpen,
   LogOut,
+  Menu,
   Settings,
+  Sun,
+  Moon,
   Users,
   Vault as VaultIcon,
+  X,
 } from "lucide-react";
 import { clsx } from "clsx";
 import { checkin, getAccessStatus, getCryptoMaterial, getHeartbeat, getMe, getVaultStatus, logout, revokeBeneficiarySession } from "../lib/client";
 import { getReadiness } from "../lib/api/owner";
-import {bindVault} from "../lib/crypto-session";
+import {bindVault, isUnlocked} from "../lib/crypto-session";
 import { useVault } from "../lib/store/vault-context";
 import { useToast } from "./toast";
 import { Spinner, StatusChip } from "./ui";
 import { VaultLockIndicator } from "./security";
 import { ApiError } from "../lib/api/transport";
+import { HomeLoading } from "./home-loading";
 
 const NAV_HOME = [
   { href: "/home", label: "Overview", icon: LayoutDashboard },
@@ -30,7 +35,7 @@ const NAV_HOME = [
   { href: "/beneficiaries", label: "People", icon: Users },
   { href: "/heartbeat", label: "Heartbeat", icon: HeartPulse },
 ];
-const NAV_RECOVERY = [{ href: "/recovery", label: "Recovery", icon: LifeBuoy }];
+const NAV_RECOVERY = [{ href: "/settings/security", label: "Recovery readiness", icon: LifeBuoy }];
 const NAV_SYSTEM = [{ href: "/settings", label: "Settings", icon: Settings }];
 
 // Bottom tabs for mobile (primary owner actions).
@@ -51,7 +56,7 @@ function NavGroup({ title, items, pathname, onNav }: {
       <p className="mb-2 px-3 text-xs font-medium text-faint">{title}</p>
       <nav className="flex flex-col gap-1" aria-label={title}>
         {items.map((item) => {
-          const active = pathname === item.href || pathname?.startsWith(`${item.href}/`);
+          const active = pathname === item.href || (item.href !== "/settings" && pathname?.startsWith(`${item.href}/`));
           const Icon = item.icon;
           return (
             <Link
@@ -74,14 +79,66 @@ function NavGroup({ title, items, pathname, onNav }: {
   );
 }
 
+function ThemeToggle({ theme, onToggle, floating = false }: {
+  theme: "dark" | "light";
+  onToggle: () => void;
+  floating?: boolean;
+}) {
+  const isLight = theme === "light";
+  const Icon = isLight ? Sun : Moon;
+  return (
+    <button
+      type="button"
+      className={clsx(
+        "btn-ghost h-9 gap-2 rounded-full px-3 text-xs",
+        floating && "fixed right-5 top-5 z-50 bg-bg shadow-sm",
+      )}
+      onClick={onToggle}
+      aria-label={`Switch to ${isLight ? "dark" : "light"} mode`}
+      aria-pressed={isLight}
+      title={`Switch to ${isLight ? "dark" : "light"} mode`}
+    >
+      <Icon className="h-4 w-4 text-accent" aria-hidden="true" />
+      <span>{isLight ? "Light" : "Dark"}<span className="hidden sm:inline"> mode</span></span>
+    </button>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { notify } = useToast();
   const { unlocked, lock } = useVault();
-  const [status, setStatus] = useState<string>("active");
+  const [status, setStatus] = useState<string | null>(null);
+  const [vaultInitialized, setVaultInitialized] = useState<boolean | null>(null);
   const [recoveryReady, setRecoveryReady] = useState<boolean | null>(null);
   const [heartbeatActive, setHeartbeatActive] = useState<boolean | null>(null);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  useEffect(() => setMobileMenuOpen(false), [pathname]);
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileMenuOpen(false);
+    };
+    window.addEventListener("keydown", onEscape);
+    return () => window.removeEventListener("keydown", onEscape);
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem("legacylock-theme");
+    const selected = saved === "light" ? "light" : "dark";
+    document.documentElement.dataset.theme = selected;
+    setTheme(selected);
+  }, []);
+
+  function toggleTheme() {
+    const selected = theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = selected;
+    window.localStorage.setItem("legacylock-theme", selected);
+    setTheme(selected);
+  }
 
   // /register + /verify-email must stay public: logged-out newcomers can only
   // create and verify accounts from outside any session.
@@ -105,17 +162,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [authError, setAuthError] = useState("");
   const [sessionVersion, setSessionVersion] = useState(0);
   useEffect(() => { const changed=()=>{setAuthed(false);setSessionVersion(v=>v+1);}; window.addEventListener("legacylock-session-changed",changed); return ()=>window.removeEventListener("legacylock-session-changed",changed); }, []);
+  useEffect(() => {
+    const expired = (event: Event) => {
+      const principal = (event as CustomEvent<"owner" | "beneficiary">).detail;
+      if (principal !== (pathname === "/recovery" ? "beneficiary" : "owner")) return;
+      setAuthed(false);
+      router.replace(pathname === "/recovery" ? "/access/login" : "/");
+    };
+    window.addEventListener("legacylock-session-expired", expired);
+    return () => window.removeEventListener("legacylock-session-expired", expired);
+  }, [pathname, router]);
   const [principal, setPrincipal] = useState<"owner" | "beneficiary">("owner");
+  const previousPath = useRef(pathname);
 
   useEffect(() => {
+    const leavingSetup = previousPath.current === "/vault/setup" && pathname !== "/vault/setup";
+    previousPath.current = pathname;
+    if (leavingSetup && isUnlocked()) lock();
     if (isPublic) return;
     let cancelled = false;
     setAuthed(false);
     setAuthError("");
     (async () => {
       if (pathname !== "/recovery") try {
-        const me=await getMe();
-        const material=await getCryptoMaterial().catch(()=>null);
+        const [me, material] = await Promise.all([
+          getMe(),
+          getCryptoMaterial().catch(() => null),
+        ]);
         if (!cancelled) {
           bindVault(`owner:${me.id}`, material?.material_revision??0);
           setPrincipal("owner");
@@ -151,10 +224,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [pathname, isPublic, router, sessionVersion]);
+  }, [pathname, isPublic, router, sessionVersion, lock]);
 
   useEffect(() => {
     if (isPublic || !authed || principal !== "owner") return;
+    setStatus(null);
     getVaultStatus()
       .then((s) => setStatus(s.status))
       .catch(() => {});
@@ -162,16 +236,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (isPublic || !authed || principal !== "owner") {
+      setVaultInitialized(null);
       setRecoveryReady(null);
       setHeartbeatActive(null);
       return;
     }
+    setVaultInitialized(null);
     setRecoveryReady(null);
     setHeartbeatActive(null);
     let cancelled = false;
     getReadiness()
       .then((evidence) => {
         if (!cancelled) {
+          setVaultInitialized(evidence.initialized);
           setRecoveryReady(
             evidence.initialized
               && evidence.ceremony_status === "READY"
@@ -180,7 +257,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           );
         }
       })
-      .catch(() => { if (!cancelled) setRecoveryReady(null); });
+      .catch(() => { if (!cancelled) { setVaultInitialized(null); setRecoveryReady(null); } });
     getHeartbeat()
       .then((heartbeat) => { if (!cancelled) setHeartbeatActive(heartbeat.armed); })
       .catch(() => { if (!cancelled) setHeartbeatActive(null); });
@@ -209,10 +286,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   if (isPublic) {
-    return <div className="public-page min-h-screen">{children}</div>;
+    return (
+      <div className="public-page min-h-screen">
+        <ThemeToggle theme={theme} onToggle={toggleTheme} floating />
+        {children}
+      </div>
+    );
   }
 
   if (!authed) {
+    if (!authError && pathname === "/home") return <HomeLoading />;
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted">
         {authError ? <>
@@ -223,7 +306,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  const statusTone = status === "triggered" ? "danger" : status === "grace" ? "warn" : "success";
+  const statusTone = status === null || vaultInitialized === false || (heartbeatActive === false && status === "active")
+    ? "neutral" : status === "triggered" ? "danger" : status === "grace" ? "warn" : "success";
+  const statusLabel = vaultInitialized === false ? "Setup needed"
+    : heartbeatActive === false && status === "active" ? "Not armed" : status ?? "Checking status";
   const isBeneficiary = principal !== "owner";
   const showBottomNav = !isPublic && authed && !isBeneficiary && isOwnerRoute;
 
@@ -231,7 +317,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="app-layout min-h-screen lg:flex">
       {/* Desktop sidebar */}
       <aside className="app-sidebar hidden w-64 shrink-0 flex-col border-r border-border bg-bg p-5 lg:flex">
-        <Link href="/home" className="brand-lockup flex items-center gap-2.5 text-base font-semibold tracking-tight">
+        <Link href={isBeneficiary ? "/recovery" : "/home"} className="brand-lockup flex items-center gap-2.5 text-base font-semibold tracking-tight">
           <span className="brand-mark"><VaultIcon className="h-4 w-4" /></span>
           <span>LegacyLock</span>
         </Link>
@@ -248,8 +334,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         )}
         <div className="sidebar-session mt-auto flex flex-col gap-2 border-t border-border pt-4">
           <StatusChip tone={unlocked ? "success" : "neutral"}>
-            {unlocked ? <LockOpen className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
-            {unlocked ? "Vault unlocked" : "Vault locked"}
+            {vaultInitialized === false ? <VaultIcon className="h-3 w-3" /> : unlocked ? <LockOpen className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
+            {vaultInitialized === false ? "Vault not set up" : unlocked ? "Vault unlocked" : "Vault locked"}
           </StatusChip>
           {unlocked && (
             <button type="button" className="btn-ghost text-xs" onClick={lock}>
@@ -265,33 +351,60 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div className="app-main min-w-0 flex-1 pb-20 lg:pb-0">
         {/* Topbar */}
-        <header className="app-topbar sticky top-0 z-40 flex h-16 items-center gap-3 border-b border-border bg-bg px-5">
-          <Link href="/home" className="flex items-center gap-2 text-base font-semibold tracking-tight lg:hidden">
+        <header className="app-topbar sticky top-0 z-40 flex h-16 items-center gap-3 border-b border-border bg-bg px-4 lg:px-5">
+          <Link href={isBeneficiary ? "/recovery" : "/home"} className="flex items-center gap-2 text-base font-semibold tracking-tight lg:hidden">
             <span className="brand-mark"><VaultIcon className="h-4 w-4" /></span>
             LegacyLock
           </Link>
           {principal === "owner" && (
-            <div className="hidden sm:block">
+            <div className="hidden lg:block">
               <StatusChip tone={statusTone} pulse={status === "grace"}>
-                {status.toUpperCase()}
+                {statusLabel.toUpperCase()}
               </StatusChip>
             </div>
           )}
-          <div className="ml-auto flex items-center gap-2">
-            {principal === "owner" && (
-              <button type="button" className="btn-ghost hidden !rounded-xl px-3 py-1.5 text-xs sm:inline-flex" disabled={status === "triggered"} onClick={onCheckin}>
+          <div className="ml-auto hidden items-center gap-2 lg:flex">
+            <ThemeToggle theme={theme} onToggle={toggleTheme} />
+            {principal === "owner" && recoveryReady === true && (
+              <button type="button" className="btn-ghost !rounded-xl px-3 py-1.5 text-xs" disabled={status === "triggered"} onClick={onCheckin}>
                 Check in
               </button>
             )}
-            <VaultLockIndicator
+            {vaultInitialized !== false && <VaultLockIndicator
               unlocked={unlocked}
               recoveryReady={recoveryReady}
               heartbeatActive={heartbeatActive}
               onLock={lock}
-            />
-            <button type="button" className="btn-ghost px-2 py-1 lg:hidden" onClick={onLogout} aria-label="Log out">
-              <LogOut className="h-4 w-4" />
+            />}
+          </div>
+          <div className="relative ml-auto lg:hidden">
+            <button
+              type="button"
+              className="btn-ghost h-10 w-10 !p-0"
+              aria-label={mobileMenuOpen ? "Close account menu" : "Open account menu"}
+              aria-expanded={mobileMenuOpen}
+              aria-controls="mobile-account-menu"
+              onClick={() => setMobileMenuOpen((open) => !open)}
+            >
+              {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </button>
+            {mobileMenuOpen && (
+              <div id="mobile-account-menu" className="absolute right-0 top-12 z-50 flex w-64 flex-col gap-2 rounded-xl border border-border bg-surface p-3 shadow-vault">
+                {principal === "owner" && (
+                  <>
+                    <StatusChip tone={statusTone}>{statusLabel.toLowerCase()}</StatusChip>
+                    <p className="text-xs text-muted">{vaultInitialized === false ? "Vault not set up" : unlocked ? "Vault unlocked in this tab" : "Vault locked in this tab"}</p>
+                    {unlocked && <button type="button" className="btn-ghost w-full justify-start" onClick={() => { lock(); setMobileMenuOpen(false); }}>Lock vault</button>}
+                    <Link className="btn-ghost w-full justify-start" href="/settings/security" onClick={() => setMobileMenuOpen(false)}>Recovery readiness</Link>
+                    <Link className="btn-ghost w-full justify-start" href="/settings" onClick={() => setMobileMenuOpen(false)}>Settings</Link>
+                  </>
+                )}
+                <ThemeToggle theme={theme} onToggle={toggleTheme} />
+                <button type="button" className="btn-ghost w-full justify-start" onClick={onLogout}>
+                  <LogOut className="h-4 w-4" /> Log out
+                </button>
+              </div>
+            )}
           </div>
         </header>
 

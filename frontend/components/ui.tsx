@@ -193,19 +193,19 @@ export function ProgressBar({ value, max = 100, tone = "success", className }: {
 
 export function Stepper({ steps, current }: { steps: string[]; current: number }) {
   return (
-    <ol className="flex items-center gap-2 text-sm" aria-label="Progress">
+    <ol className="grid grid-cols-4 gap-1 text-[11px] sm:flex sm:items-center sm:gap-2 sm:text-sm" aria-label="Progress">
       {steps.map((label, i) => (
-        <li key={label} className="flex items-center gap-2" aria-current={current === i + 1 ? "step" : undefined}>
+        <li key={label} className="flex min-w-0 flex-col items-center gap-1 text-center sm:flex-row sm:gap-2 sm:text-left" aria-current={current === i + 1 ? "step" : undefined}>
           <span
             className={clsx(
-              "flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold transition-colors",
+              "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold transition-colors",
               current > i + 1 ? "bg-success text-[rgb(var(--status-ink))]" : current === i + 1 ? "bg-[rgb(var(--gold))] text-[rgb(var(--navy))]" : "bg-raised text-muted",
             )}
           >
             {i + 1}
           </span>
-          <span className={current === i + 1 ? "font-medium text-text" : "text-muted"}>{label}</span>
-          {i < steps.length - 1 && <span className="mx-1 text-faint">—</span>}
+          <span className={clsx("min-w-0 break-words", current === i + 1 ? "font-medium text-text" : "text-muted")}>{label}</span>
+          {i < steps.length - 1 && <span className="mx-1 hidden text-faint sm:inline">—</span>}
         </li>
       ))}
     </ol>

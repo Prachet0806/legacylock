@@ -4,8 +4,7 @@
 
 /* LegacyLock — navy foundation, cream reading surfaces, restrained gold detail. */
 :root,
-[data-theme="dark"],
-[data-theme="light"] {
+[data-theme="dark"] {
   --navy: 20 33 61;      /* #14213D — dominant 60% */
   --cream: 244 237 224;  /* #F4EDE0 — supporting 30% */
   --gold: 212 175 91;    /* gold — accent 10% */
@@ -25,8 +24,26 @@
   color-scheme: dark;
 }
 
+/* Light mode reverses the main navy and cream surfaces while retaining gold. */
+[data-theme="light"] {
+  --bg: var(--cream);
+  --surface: var(--navy);
+  --raised: 37 51 78;
+  --border: 72 84 106;
+  --text: var(--navy);
+  --muted: 70 77 88;
+  --faint: 97 103 112;
+  --accent: 119 82 20;
+  --ring: 119 82 20;
+  --danger: 160 52 48;
+  --success: 35 108 70;
+  --warn: 132 88 19;
+  --status-ink: var(--cream);
+  color-scheme: light;
+}
+
 /* Large cream areas carry their own ink and controls. */
-:where(.card, .surface-lg, .surface-hero, .account-form, .public-auth > section:last-child,
+:where(.card, .surface-lg, .surface-hero, .stat-tile, .account-form, .public-auth > section:last-child,
   .bg-surface:not(.app-sidebar):not(.mobile-nav):not(.auth-story)) {
   --raised: 232 223 207;
   --border: 207 195 174;
@@ -41,6 +58,22 @@
   --status-ink: var(--cream);
   color-scheme: light;
   color: rgb(var(--text));
+}
+
+[data-theme="light"] :where(.card, .surface-lg, .surface-hero, .stat-tile, .account-form, .public-auth > section:last-child,
+  .bg-surface:not(.app-sidebar):not(.mobile-nav):not(.auth-story)) {
+  --raised: 37 51 78;
+  --border: 72 84 106;
+  --text: var(--cream);
+  --muted: 207 205 198;
+  --faint: 167 175 190;
+  --accent: 212 175 91;
+  --ring: 212 175 91;
+  --danger: 241 132 125;
+  --success: 142 207 169;
+  --warn: 232 182 99;
+  --status-ink: var(--navy);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -100,7 +133,7 @@ button:disabled { cursor: not-allowed; }
   .display-title { @apply text-4xl font-medium leading-tight tracking-tight sm:text-5xl; }
   .supporting { @apply text-sm leading-6 text-muted; }
   .eyebrow { @apply text-xs font-medium text-faint; }
-  .stat-tile { @apply surface-lg flex flex-col gap-2 text-left; }
+  .stat-tile { @apply surface-lg flex flex-col gap-2 text-left; color: rgb(var(--text)); }
   .vault-dot { @apply inline-block h-2 w-2 rounded-full; }
 }
 
@@ -135,6 +168,18 @@ body:has(main.public-auth) { background: rgb(var(--bg)); }
   color: rgb(var(--accent));
 }
 .app-sidebar { position: sticky; top: 0; height: 100svh; }
+[data-theme="light"] .app-sidebar {
+  --bg: var(--navy);
+  --raised: 37 51 78;
+  --border: 72 84 106;
+  --text: var(--cream);
+  --muted: 207 205 198;
+  --faint: 167 175 190;
+  --accent: var(--gold);
+  --ring: var(--gold);
+  color-scheme: dark;
+  color: rgb(var(--text));
+}
 .app-sidebar > a:first-child { min-height: 40px; }
 .app-sidebar > div:not(.sidebar-session) { margin-top: 28px; }
 .sidebar-session .chip { justify-content: flex-start; }
@@ -159,7 +204,7 @@ body:has(main.public-auth) { background: rgb(var(--bg)); }
 .registration-step > span:first-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
 .registration-step.is-current { border-color: rgb(var(--accent)); color: rgb(var(--text)); }
 .registration-step.is-current > span:first-child { color: rgb(var(--accent)); }
-.account-form { gap: 16px !important; border: 1px solid rgb(var(--border)); border-radius: 14px; background: rgb(252 248 240); padding: 20px; box-shadow: 0 8px 28px rgb(var(--navy) / .06); }
+.account-form { gap: 16px !important; border: 1px solid rgb(var(--border)); border-radius: 14px; background: rgb(var(--surface)); padding: 20px; box-shadow: 0 8px 28px rgb(var(--navy) / .06); }
 .invite-field { margin-top: 2px; border-top: 1px solid rgb(var(--border)); padding-top: 16px; }
 .public-auth .input { min-height: 44px; }
 .public-auth .btn-primary { min-height: 46px; }
@@ -176,12 +221,12 @@ body:has(main.public-auth) { background: rgb(var(--bg)); }
 @media (max-width: 1023px) {
   #app-content > main { padding-top: 28px; padding-bottom: 40px; }
   .app-sidebar { display: none; }
-  .public-auth > section:last-child { background: rgb(var(--navy)); }
+  .public-auth > section:last-child { background: rgb(var(--bg)); }
   .auth-form-inner {
     border: 1px solid rgb(var(--border));
     border-top: 2px solid rgb(var(--gold));
     border-radius: 16px;
-    background: rgb(var(--cream));
+    background: rgb(var(--surface));
     padding: 28px;
     box-shadow: 0 16px 48px rgb(0 0 0 / .12);
   }

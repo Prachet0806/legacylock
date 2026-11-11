@@ -89,3 +89,4 @@ pip-wheel-metadata/
 backend/keys/*.pem
 .local-test-pg/
 .restore-rehearsal/
+.neon

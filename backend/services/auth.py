@@ -2,6 +2,7 @@
 
 import hashlib
 import secrets
+import threading
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -18,6 +19,11 @@ ph = PasswordHasher(
     parallelism=4,
     hash_len=32,
     salt_len=16,
+)
+_hash_slots = (
+    threading.BoundedSemaphore(get_settings().demo_argon2_concurrency)
+    if get_settings().task_mode == "single_process_demo"
+    else None
 )
 
 # JWT settings
@@ -47,16 +53,24 @@ def _get_jwt_public_key() -> str:
 
 def hash_password(password: str) -> str:
     """Hash a password using Argon2id."""
-    return ph.hash(password)
+    if _hash_slots is None:
+        return ph.hash(password)
+    with _hash_slots:
+        return ph.hash(password)
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     """Verify a password against its Argon2id hash."""
     try:
-        ph.verify(password_hash, password)
-        return True
+        if _hash_slots is None:
+            ph.verify(password_hash, password)
+        else:
+            with _hash_slots:
+                ph.verify(password_hash, password)
     except Exception:
         return False
+    else:
+        return True
 
 
 def hash_token(token: str) -> str:

@@ -106,7 +106,7 @@ Reconstruction is performed exclusively in the browser.
 
 ## Share Distribution
 
-LegacyLock does not email, SMS, or otherwise transmit raw shares.
+LegacyLock notifications never contain raw recovery shares.
 
 The owner distributes shares out-of-band.
 

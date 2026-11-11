@@ -1,90 +1,80 @@
-# DEPRECATED historical example. This blueprint is not production-qualified or
-# used by the supported Northflank/Vercel/Supabase topology in DEPLOY.md.
-# Do not create production services from this file.
-# Replace example domains and configure secret files in the Render dashboard.
-# Render Blueprint does not manage secret-file contents. API only gets the JWT pair.
+# Render Free API for the selected Vercel -> Render -> Neon architecture.
+# Neon is external; the Vercel frontend is configured separately.
+# Free has no worker or pre-deploy migration command. Run Alembic from a
+# trusted local/CI environment before manually deploying schema changes.
 services:
   - type: web
     name: legacylock-backend
     runtime: docker
+    region: singapore
+    plan: free
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: starter
-    numInstances: 1 # in-process rate buckets; scale only after shared enforcement
-    autoDeployTrigger: off # controlled migration and worker rollout
-    healthCheckPath: /readyz
-    preDeployCommand: alembic upgrade head
-    dockerCommand: uvicorn main:app --host 0.0.0.0 --port 8000 --no-proxy-headers
+    autoDeployTrigger: off
+    healthCheckPath: /health
     envVars:
+      - key: PORT
+        value: "8000"
       - key: ENVIRONMENT
         value: production
+      - key: TASK_MODE
+        value: single_process_demo
+      - key: BACKGROUND_IN_API
+        value: "false"
+      - key: DEMO_CHECK_INTERVAL_SECONDS
+        value: "1800"
+      - key: DEMO_DELIVERY_BATCH_SIZE
+        value: "5"
+      - key: DEMO_ARGON2_CONCURRENCY
+        value: "1"
+      - key: DB_POOL_SIZE
+        value: "3"
+      - key: DB_MAX_OVERFLOW
+        value: "0"
+      - key: DB_POOL_TIMEOUT
+        value: "10"
       - key: DATABASE_URL
-        fromDatabase: { name: legacylock-pg, property: connectionString }
+        # Use Neon direct/unpooled URL with sslmode=verify-full.
+        sync: false
+      - key: PGSSLROOTCERT
+        value: /etc/ssl/certs/ca-certificates.crt
       - key: SESSION_SECRET
         sync: false
-      - key: ALLOWED_ORIGINS
-        value: https://app.example.com
-      - key: ALLOWED_HOSTS
-        value: legacylock-backend.onrender.com,api.example.com
-      - key: FRONTEND_URL
-        value: https://app.example.com
-      - key: TRUSTED_PROXIES
-        sync: false
-      - key: BACKGROUND_IN_API
-        value: false
-      - key: RELEASE_HOLD
-        value: true
       - key: AUTH_EPOCH
         sync: false
+      - key: JWT_PRIVATE_KEY_B64
+        sync: false
+      - key: JWT_PUBLIC_KEY_B64
+        sync: false
+      - key: ALLOWED_ORIGINS
+        # Exact HTTPS origin of the Vercel frontend.
+        sync: false
+      - key: FRONTEND_URL
+        # Same exact HTTPS origin as ALLOWED_ORIGINS.
+        sync: false
+      - key: ALLOWED_HOSTS
+        # Include legacylock-backend.onrender.com and any configured API hostname.
+        sync: false
+      - key: TRUSTED_PROXIES
+        # Verified proxy CIDRs only; blank is allowed if none are configured.
+        sync: false
+      - key: HEARTBEAT_ENABLED
+        value: "true"
+      - key: RELEASE_HOLD
+        value: "true"
+      - key: DELIVERY_ENABLED
+        value: "false"
       - key: DELIVERY_PAYLOAD_KEY
+        sync: false
+      - key: DELIVERY_PAYLOAD_KEY_ID
+        value: v1
+      - key: DELIVERY_PAYLOAD_KEYS
+        value: "{}"
+      - key: RESEND_API_KEY
+        sync: false
+      - key: NOTIFICATION_EMAIL_FROM
         sync: false
       - key: OPERATIONS_TOKEN
         sync: false
       - key: REGISTRATION_INVITE_CODE
         sync: false
-      - key: RESEND_API_KEY
-        sync: false
-      - key: NOTIFICATION_EMAIL_FROM
-        sync: false
-      - key: JWT_PRIVATE_KEY_PATH
-        value: /etc/secrets/jwt_private.pem
-      - key: JWT_PUBLIC_KEY_PATH
-        value: /etc/secrets/jwt_public.pem
-  - type: worker
-    name: legacylock-worker
-    runtime: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    plan: starter
-    autoDeployTrigger: off
-    dockerCommand: python worker.py
-    envVars:
-      - key: ENVIRONMENT
-        value: production
-      - key: DATABASE_URL
-        fromDatabase: { name: legacylock-pg, property: connectionString }
-      - key: SESSION_SECRET
-        value: unused-worker-setting-no-cookie-signing-0000
-      - key: BACKGROUND_IN_API
-        value: false
-      - key: RELEASE_HOLD
-        value: true
-      - key: HEARTBEAT_ENABLED
-        value: true
-      - key: AUTH_EPOCH
-        sync: false
-      - key: DELIVERY_PAYLOAD_KEY
-        sync: false
-      - key: RESEND_API_KEY
-        sync: false
-      - key: NOTIFICATION_EMAIL_FROM
-        sync: false
-      - key: FRONTEND_URL
-        value: https://app.example.com
-# Keep API/worker key, epoch, hold and provider settings synchronized.
-# Workers need no JWT files. Deploy the worker only after migration succeeds.
-databases:
-  - name: legacylock-pg
-    plan: 0.1c-256mb
-    postgresMajorVersion: 17
-    ipAllowList: []

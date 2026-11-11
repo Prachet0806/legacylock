@@ -63,14 +63,14 @@ export default function RegisterPage() {
                 Make room for what you want to leave behind.
               </h2>
               <p className="mt-5 max-w-md text-base leading-7 text-muted">
-                Create an owner account, verify your email, then set up your private vault and recovery plan.
+                Create an owner account, verify your email, then sign in to set up your vault from the dashboard.
               </p>
             </div>
             <ol className="grid max-w-md gap-3 text-sm">
               {[
                 { title: "Create your account", detail: "Use an invitation code to register." },
                 { title: "Verify your email", detail: "Confirm the address before signing in." },
-                { title: "Set up your vault", detail: "Choose a passphrase and recovery policy." },
+                { title: "Open your dashboard", detail: "Set up your vault after sign-in." },
               ].map((step, index) => (
                 <li key={step.title} className="flex items-start gap-3 text-muted">
                   <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border text-xs tabular-nums text-accent">0{index + 1}</span>
@@ -95,13 +95,12 @@ export default function RegisterPage() {
           <p className="eyebrow">Invitation required</p>
           <h1 className="mt-2 text-2xl font-medium tracking-tight">Create your owner account</h1>
           <p className="mt-2 text-sm leading-6 text-muted">
-            Register with your invitation code. You’ll verify your email before signing in.
+            Register with your invitation code. After email verification, sign in and set up your vault from the dashboard.
           </p>
-          <ol className="registration-steps mt-5 grid grid-cols-3 gap-2" aria-label="Account setup steps">
+          <ol className="registration-steps mt-5 grid grid-cols-2 gap-2" aria-label="Account setup steps">
             {[
               { number: "01", label: "Account", active: true },
               { number: "02", label: "Verify email", active: false },
-              { number: "03", label: "Vault setup", active: false },
             ].map((step) => (
               <li key={step.number} className={step.active ? "registration-step is-current" : "registration-step"}>
                 <span>{step.number}</span>
