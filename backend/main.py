@@ -211,7 +211,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_parse_origins(settings.allowed_origins),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
     max_age=600,
 )

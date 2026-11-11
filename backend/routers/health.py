@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -15,6 +15,11 @@ router = APIRouter(tags=["system"])
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.head("/health", include_in_schema=False)
+def health_head() -> Response:
+    return Response(status_code=200)
 
 
 @router.get("/healthz")

@@ -15,6 +15,22 @@ class TestHealth:
         assert res.status_code == 200
         assert res.json()["status"] == "ok"
 
+    def test_health_head_no_auth(self, client):
+        res = client.head("/health")
+        assert res.status_code == 200
+        assert res.content == b""
+
+    def test_health_head_allowed_by_cors(self, client):
+        res = client.options(
+            "/health",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "HEAD",
+            },
+        )
+        assert res.status_code == 200
+        assert "HEAD" in res.headers["access-control-allow-methods"]
+
     def test_readyz(self, client):
         res = client.get("/readyz")
         assert res.status_code in (200, 500)
