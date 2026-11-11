@@ -1,6 +1,7 @@
 """Production configuration and operational failure-path regressions."""
 
 import base64
+import logging
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlencode
@@ -186,6 +187,27 @@ def test_malformed_secret_store_jwt_pem_fails_without_echoing_secret() -> None:
     with pytest.raises(RuntimeError, match="Invalid base64-encoded JWT PEM") as error:
         settings.jwt_private_key()
     assert "invalid secret!" not in str(error.value)
+
+
+def test_startup_failure_reports_stage_without_logging_exception_detail(
+    caplog: pytest.LogCaptureFixture, monkeypatch: MonkeyPatch,
+) -> None:
+    from main import app, logger
+    from services import auth as auth_service
+
+    def fail_private_load() -> str:
+        raise RuntimeError("private fixture value must stay out of logs")
+
+    # Alembic's test setup disables previously registered loggers.
+    monkeypatch.setattr(logger, "disabled", False)
+    monkeypatch.setattr(auth_service, "_get_jwt_private_key", fail_private_load)
+    with caplog.at_level(logging.ERROR, logger="legacylock"):
+        with pytest.raises(RuntimeError, match="private fixture value"):
+            with TestClient(app):
+                pass
+    assert "STARTUP_CHECK_FAILED check=signing_private_load error_type=RuntimeError" in caplog.text
+    assert "private fixture value" not in caplog.text
+    assert "[REDACTED]" not in caplog.text
 
 
 def test_worker_checkpoint_failure_does_not_mask_original_error(

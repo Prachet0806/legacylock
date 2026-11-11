@@ -3,6 +3,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Callable, TypeVar
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +42,18 @@ setup_logging()
 logger = logging.getLogger("legacylock")
 
 HEARTBEAT_CHECK_INTERVAL = int(os.environ.get("HEARTBEAT_CHECK_INTERVAL", "60"))
+T = TypeVar("T")
+
+
+def _startup_checked(check: str, operation: Callable[[], T]) -> T:
+    """Log a fixed startup stage without exposing exception text or key material."""
+    try:
+        return operation()
+    except Exception as exc:
+        # The operational log filter intentionally redacts messages containing
+        # words such as "jwt" and "secret". Keep check names free of those words.
+        logger.error("STARTUP_CHECK_FAILED check=%s error_type=%s", check, type(exc).__name__)
+        raise
 
 
 async def _record_failure(component: str, exc: Exception) -> None:
@@ -106,14 +119,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Fail closed on bad keys before serving traffic (invalidates old tokens)
     from services.auth import _get_jwt_private_key, _get_jwt_public_key
 
-    _get_jwt_private_key()
-    _get_jwt_public_key()
+    private_pem = _startup_checked("signing_private_load", _get_jwt_private_key)
+    public_pem = _startup_checked("signing_public_load", _get_jwt_public_key)
     from cryptography.hazmat.primitives import serialization
 
-    private = serialization.load_pem_private_key(settings.jwt_private_key().encode(), password=None)
-    public = serialization.load_pem_public_key(settings.jwt_public_key().encode())
-    if private.key_size < 2048 or private.public_key().public_numbers() != public.public_numbers():
-        raise RuntimeError("JWT RSA key pair is invalid or mismatched")
+    private = _startup_checked(
+        "signing_private_parse",
+        lambda: serialization.load_pem_private_key(private_pem.encode(), password=None),
+    )
+    public = _startup_checked(
+        "signing_public_parse",
+        lambda: serialization.load_pem_public_key(public_pem.encode()),
+    )
+    try:
+        if private.key_size < 2048 or private.public_key().public_numbers() != public.public_numbers():
+            raise RuntimeError("JWT RSA key pair is invalid or mismatched")
+    except Exception as exc:
+        logger.error("STARTUP_CHECK_FAILED check=signing_pair error_type=%s", type(exc).__name__)
+        raise
     if settings.environment == "production":
         # Deployment discipline: X-Forwarded-For is trusted ONLY via
         # TRUSTED_PROXIES. An empty list behind a proxy makes client IPs
@@ -125,10 +148,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 "Caddy/Cloudflare"
             )
         if not settings.resend_api_key:
+            logger.error("STARTUP_CHECK_FAILED check=mail_provider_config error_type=MissingValue")
             raise RuntimeError("RESEND_API_KEY required in production")
         from services.outbox import payload_key
 
-        payload_key()
+        _startup_checked("delivery_cipher_load", payload_key)
     # In test env init_db creates tables; in prod Alembic owns schema.
     if settings.environment != "production" and not settings.migrated_schema_only:
         init_db()
@@ -142,8 +166,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.task_mode == "single_process_demo":
         from services.demo_scheduler import DemoScheduler
 
-        demo_scheduler = DemoScheduler()
-        demo_scheduler.start()
+        demo_scheduler = _startup_checked("scheduler_construct", DemoScheduler)
+        _startup_checked("scheduler_start", demo_scheduler.start)
+    logger.info("STARTUP_CHECKS_PASSED")
     try:
         yield
     finally:
