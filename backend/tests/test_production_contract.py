@@ -27,7 +27,6 @@ def _production_settings(**overrides: object) -> Settings:
         auth_epoch="production-epoch-2026-10-23",
         background_in_api=False,
         heartbeat_enabled=True,
-        sms_enabled=False,
         frontend_url="https://app.legacylock.test",
         allowed_origins="https://app.legacylock.test",
         allowed_hosts="api.legacylock.test",
@@ -164,7 +163,6 @@ def test_api_preflight_checks_matching_jwt_keys(tmp_path: Path) -> None:
         ("allowed_hosts", "localhost"),
         ("allowed_hosts", "*.legacylock.test"),
         ("allowed_origins", "https://app.legacylock.test,https://preview.legacylock.test"),
-        ("sms_enabled", True),
     ],
 )
 def test_production_rejects_unsafe_values(field: str, value: object) -> None:

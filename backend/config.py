@@ -49,7 +49,6 @@ class Settings(BaseSettings):
     delivery_payload_key_id: str = "v1"
     delivery_payload_keys: str = "{}"
     auth_epoch: str = "initial"
-    sms_enabled: bool = False
     background_in_api: bool = True
     task_mode: Literal["separate_worker", "single_process_demo"] = "separate_worker"
     demo_check_interval_seconds: int = Field(default=1800, ge=300, le=86400)
@@ -110,16 +109,15 @@ class Settings(BaseSettings):
             "allowed_origins",
             "allowed_hosts",
             "heartbeat_enabled",
-            "sms_enabled",
             "notification_email_from",
         }
         missing = required - self.model_fields_set
         if missing:
             names = ", ".join(sorted(missing))
             raise RuntimeError(f"Explicit production settings required: {names}")
-        if self.background_in_api or not self.heartbeat_enabled or self.sms_enabled:
+        if self.background_in_api or not self.heartbeat_enabled:
             raise RuntimeError(
-                "Production requires BACKGROUND_IN_API=false, heartbeat enabled, and SMS disabled"
+                "Production requires BACKGROUND_IN_API=false and heartbeat enabled"
             )
         if self.task_mode == "single_process_demo" and "task_mode" not in self.model_fields_set:
             raise RuntimeError("Single-process demo mode must be selected explicitly")

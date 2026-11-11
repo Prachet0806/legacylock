@@ -13,7 +13,7 @@
 | C7 | Recovery Service | Recovery policy and access metadata |
 | C8 | Heartbeat Service | Inactivity evaluation |
 | C9 | Trigger Service | Release state transitions |
-| C10 | Notification Service | Email/SMS/mock delivery |
+| C10 | Notification Service | Email delivery |
 | C11 | Background Scheduler | Periodic evaluation |
 | C12 | Persistence & Audit Layer | Database access and audit events |
 
@@ -124,7 +124,6 @@ Provider-independent interface:
 NotificationService
  ├── MockProvider
  ├── EmailProvider
- └── SMSProvider
 ```
 
 Never transports raw Shamir shares.

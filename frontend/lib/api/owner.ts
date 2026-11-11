@@ -123,7 +123,6 @@ export interface Beneficiary {
   id: number;
   name: string;
   email: string;
-  phone: string | null;
   share_index: number | null;
   assignment_current: boolean;
   invitation_status: string;
@@ -132,7 +131,7 @@ export interface Beneficiary {
   created_at: string;
 }
 export const listBeneficiaries = () => ownerFetch<Beneficiary[]>("/beneficiaries");
-export const addBeneficiary = (body: { name: string; email: string; phone?: string }) =>
+export const addBeneficiary = (body: { name: string; email: string }) =>
   ownerFetch<{ id: number }>("/beneficiaries", { method: "POST", body: JSON.stringify(body) });
 export const deleteBeneficiary = (id: number) =>
   ownerFetch<void>(`/beneficiaries/${id}`, { method: "DELETE" });

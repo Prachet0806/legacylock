@@ -182,7 +182,7 @@ def main():
     report = {
         "source": "isolated browser PostgreSQL database",
         "target": "new loopback PostgreSQL database",
-        "schema": "0008_delivery_attempts",
+        "schema": "0010_email_only_delivery",
         "encrypted_backup_bytes": len(protected),
         "crypto_snapshot_sha256": after["crypto_snapshot_sha256"],
         "vaults": after["vaults"],

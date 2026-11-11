@@ -211,7 +211,11 @@ def test_release_retry_wakes_scheduler_at_due_time(
     assert len(pass_times) >= 2
     assert observed_due and observed_due[0] is not None
     assert abs((observed_due[0] - scheduled).total_seconds()) < 1
-    assert pass_times[1] >= scheduled, (pass_times, observed_due, settings.demo_check_interval_seconds)
+    assert pass_times[1] >= scheduled, (
+        pass_times,
+        observed_due,
+        settings.demo_check_interval_seconds,
+    )
     assert pass_times[1] - scheduled < timedelta(seconds=3)
     with SessionLocal() as db:
         assert _job(db, ident).state == "RETRY_WAIT"

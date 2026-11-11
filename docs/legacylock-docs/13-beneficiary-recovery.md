@@ -43,7 +43,7 @@ Examples:
 - password manager
 - printed recovery card
 
-LegacyLock does not send shares by email/SMS.
+LegacyLock notifications never contain raw recovery shares.
 
 ## Beneficiary Lifecycle
 

@@ -39,5 +39,5 @@ class NotificationLog(Base):
             "status IN ('pending','sent','failed','retrying')",
             name="ck_notification_status",
         ),
-        CheckConstraint("channel IN ('email','sms')", name="ck_notification_channel"),
+        CheckConstraint("channel IN ('email','legacy')", name="ck_notification_channel"),
     )

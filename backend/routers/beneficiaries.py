@@ -32,14 +32,12 @@ MAX_SHARE_INDEX = 255  # GF(256) x-coord range; per-vault total caps further.
 class BeneficiaryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     email: EmailStr = Field(..., max_length=320)
-    phone: str | None = Field(None, max_length=30)
     share_index: int | None = Field(None, ge=1, le=MAX_SHARE_INDEX)
 
 
 class BeneficiaryUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     email: EmailStr | None = Field(None, max_length=320)
-    phone: str | None = Field(None, max_length=30)
     share_index: int | None = Field(None, ge=1, le=MAX_SHARE_INDEX)
 
 
@@ -47,7 +45,6 @@ class BeneficiaryOut(BaseModel):
     id: int
     name: str
     email: str
-    phone: str | None
     share_index: int | None
     assignment_current: bool = False
     invitation_status: str
@@ -136,7 +133,6 @@ def add_beneficiary(
         vault_id=vault.id,
         name=data.name,
         email=str(data.email),
-        phone=data.phone,
         share_index=data.share_index,
     )
     if data.share_index is not None:
@@ -179,7 +175,6 @@ def list_beneficiaries(current_user: User = Depends(require_owner), db: Session 
             id=r.id,
             name=r.name,
             email=r.email,
-            phone=r.phone,
             share_index=r.share_index,
             assignment_current=bool(
                 r.share_index is not None
@@ -279,8 +274,6 @@ def update_beneficiary(
         beneficiary.invitation_hash = None
         beneficiary.invitation_accepted_at = None
         beneficiary.invitation_sent_at = None
-    if "phone" in data.model_fields_set:
-        beneficiary.phone = data.phone
     if "share_index" in data.model_fields_set and data.share_index is None:
         beneficiary.share_index = None
         beneficiary.ceremony_generation = None

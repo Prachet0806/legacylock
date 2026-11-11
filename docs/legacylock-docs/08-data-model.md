@@ -73,7 +73,6 @@ Core fields:
 - vault_id
 - name
 - email
-- phone
 - share_index
 - invitation credential hash
 - invitation status

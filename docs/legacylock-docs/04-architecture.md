@@ -81,7 +81,7 @@ The crypto engine is a separate client-side dependency and does not depend on th
 - One FastAPI deployment
 - One PostgreSQL instance
 - One basic scheduler
-- Optional SendGrid/Twilio providers
+- Resend email provider
 - HTTPS
 - `/health`
 
