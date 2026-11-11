@@ -31,6 +31,15 @@ def check_database(settings: Settings) -> None:
         raise PreflightError("DATABASE_URL is invalid") from exc
     if url.drivername not in {"postgresql+psycopg", "postgresql", "postgres"}:
         raise PreflightError("DATABASE_URL must use PostgreSQL with psycopg")
+    hostname = (url.host or "").lower()
+    if (
+        settings.task_mode == "single_process_demo"
+        and hostname.endswith(".neon.tech")
+        and any(label.endswith("-pooler") for label in hostname.split("."))
+    ):
+        raise PreflightError(
+            "TASK_MODE=single_process_demo requires a direct Neon DATABASE_URL without -pooler"
+        )
     if url.query.get("sslmode") != "verify-full":
         raise PreflightError("DATABASE_URL must specify sslmode=verify-full")
     certificate = url.query.get("sslrootcert") or os.environ.get("PGSSLROOTCERT")
