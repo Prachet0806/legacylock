@@ -38,17 +38,22 @@ const nextConfig = {
       ? process.env.PREVIEW_API_UPSTREAM
       : process.env.API_UPSTREAM || (isDev ? "http://localhost:8000" : "");
     if (process.env.VERCEL === "1") {
-      if (!target || !httpsOrigin(target)) {
-        throw new Error("Vercel requires a deployed HTTPS API origin for this environment");
-      }
-      if (preview && (
-        !httpsOrigin(process.env.PRODUCTION_API_UPSTREAM || "")
-        || httpsOrigin(target) === httpsOrigin(process.env.PRODUCTION_API_UPSTREAM)
-      )) {
-        throw new Error("Preview must use an isolated API origin distinct from production");
-      }
       if ((process.env.NEXT_PUBLIC_API_URL || "/api") !== "/api") {
         throw new Error("Vercel requires same-origin NEXT_PUBLIC_API_URL=/api");
+      }
+
+      // An absent API origin supports an initial frontend-only deployment.
+      // Validate routing when configured so placeholder or insecure origins
+      // cannot silently ship in a Vercel build.
+      if (target && !httpsOrigin(target)) {
+        throw new Error("API upstream must be a valid deployed HTTPS origin");
+      }
+
+      if (preview && target) {
+        const productionTarget = httpsOrigin(process.env.PRODUCTION_API_UPSTREAM || "");
+        if (!productionTarget || httpsOrigin(target) === productionTarget) {
+          throw new Error("Preview must use an isolated API origin distinct from production");
+        }
       }
     }
     if (!target) return [];

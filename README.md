@@ -48,7 +48,7 @@ npm ci
 npm run dev
 ```
 
-Set `API_UPSTREAM` before a production build. The rewrite is baked into the build; changing only the runner environment does not rebuild it. Use same-origin `/api` in the browser. Independent cross-site cookie deployment is outside the qualified topology.
+For a frontend-only Vercel deployment, `API_UPSTREAM` may be omitted; the app builds without an `/api` proxy and API-dependent features remain unavailable. Set the real HTTPS `API_UPSTREAM` before the build that enables backend features. The rewrite is baked into the build; changing only the runner environment does not rebuild it. Use same-origin `/api` in the browser. Independent cross-site cookie deployment is outside the qualified topology.
 
 For the optional paid separate-worker topology, set `BACKGROUND_IN_API=false` on the API and run `python worker.py` from `backend/` with matching database, hold, delivery key ring, epoch and provider settings. The worker needs no JWT private key. Do not run it alongside the in-process scheduler; do not run the old notification sender alongside either mode.
 
