@@ -145,16 +145,46 @@ jobs:
           RESTORE_FIXTURE_PASSPHRASE: E2E-Vault-Passphrase-12345
         run: |
           python restore_rehearsal.py --target legacylock_restore_ci --pg-image postgres:17-alpine --report ../.restore-rehearsal/restore-rehearsal-evidence.json --fixture-output ../.restore-rehearsal/server.json
-          kill "$(cat /tmp/legacylock-api.pid)"
+          previous_api_pid="$(cat /tmp/legacylock-api.pid)"
+          kill "$previous_api_pid"
+          for i in $(seq 1 50); do
+            if ! kill -0 "$previous_api_pid" 2>/dev/null; then break; fi
+            sleep 0.1
+          done
+          if kill -0 "$previous_api_pid" 2>/dev/null; then
+            echo "The original API did not stop before the restored API start." >&2
+            cat /tmp/api.log >&2
+            exit 1
+          fi
           export DATABASE_URL=postgresql+psycopg://legacylock:legacylock@localhost:5432/legacylock_restore_ci
           export AUTH_EPOCH=$(python -c 'import json; print(json.load(open("../.restore-rehearsal/server.json"))["auth_epoch"])')
           export RELEASE_HOLD=true DELIVERY_ENABLED=false
           uvicorn main:app --host 127.0.0.1 --port 8000 --no-proxy-headers > /tmp/restored-api.log 2>&1 &
+          restored_api_pid=$!
+          restored_api_ready=false
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/readyz; then break; fi
+            if body="$(curl -fsS --max-time 2 http://127.0.0.1:8000/readyz 2>/dev/null)"; then
+              printf '%s\n' "$body"
+              restored_api_ready=true
+              break
+            fi
+            if ! kill -0 "$restored_api_pid" 2>/dev/null; then
+              echo "Restored API exited before /readyz became available." >&2
+              cat /tmp/restored-api.log >&2
+              exit 1
+            fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:8000/readyz
+          if [ "$restored_api_ready" != true ]; then
+            echo "Restored API did not become ready within 30 seconds." >&2
+            cat /tmp/restored-api.log >&2
+            exit 1
+          fi
+          if ! kill -0 "$restored_api_pid" 2>/dev/null; then
+            echo "Restored API exited immediately after readiness." >&2
+            cat /tmp/restored-api.log >&2
+            exit 1
+          fi
       - name: Fresh browser recovery against restored database
         working-directory: frontend
         run: |
