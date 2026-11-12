@@ -90,8 +90,8 @@ function ThemeToggle({ theme, onToggle, floating = false }: {
     <button
       type="button"
       className={clsx(
-        "btn-ghost h-9 gap-2 rounded-full px-3 text-xs",
-        floating && "fixed right-5 top-5 z-50 bg-bg shadow-sm",
+        "btn h-9 gap-2 rounded-full border border-border px-3 text-xs text-text hover:border-accent hover:shadow-sm active:border-accent",
+        floating ? "fixed right-5 top-5 z-50 bg-bg shadow-sm" : "bg-transparent",
       )}
       onClick={onToggle}
       aria-label={`Switch to ${isLight ? "dark" : "light"} mode`}
