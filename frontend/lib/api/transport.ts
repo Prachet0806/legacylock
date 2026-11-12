@@ -8,6 +8,8 @@
 import { assertEpoch, currentEpoch, lockVault } from "../crypto-session";
 const API_URL = (process.env.NEXT_PUBLIC_API_URL?.trim() || "/api").replace(/\/$/, "");
 const flights = new Map<string, Promise<void>>();
+const ownerReadFlights = new Map<string, Promise<unknown>>();
+let ownerDataGeneration = 0;
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -145,7 +147,22 @@ async function fetchWithRefresh<T>(
 
 /** Owner session: silent retry via the owner refresh cookie. */
 export function ownerFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  return fetchWithRefresh<T>(path, init, "/auth/refresh");
+  // Coalesce only identical plain GETs in the same session. Results are not
+  // retained after completion, so each later navigation still gets fresh data.
+  if ((init.method ?? "GET").toUpperCase() !== "GET") {
+    ownerDataGeneration++;
+    ownerReadFlights.clear();
+    return fetchWithRefresh<T>(path, init, "/auth/refresh");
+  }
+  if (Object.keys(init).length !== 0) return fetchWithRefresh<T>(path, init, "/auth/refresh");
+  const key = `${currentEpoch()}:${ownerDataGeneration}:${path}`;
+  const existing = ownerReadFlights.get(key);
+  if (existing) return existing as Promise<T>;
+  const request = fetchWithRefresh<T>(path, init, "/auth/refresh").finally(() => {
+    if (ownerReadFlights.get(key) === request) ownerReadFlights.delete(key);
+  });
+  ownerReadFlights.set(key, request);
+  return request;
 }
 
 /** Beneficiary session: silent retry via the beneficiary refresh cookie.

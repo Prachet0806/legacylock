@@ -44,6 +44,11 @@ const TABS = [...NAV_HOME];
 // Public routes render without the app chrome. The login form lives at /,
 // so / is public; everything else requires the shell.
 const PUBLIC_ACCESS_PREFIX = "/access";
+type VerifiedSession = {
+  principal: "owner" | "beneficiary";
+  id: number;
+  version: number;
+};
 
 function NavGroup({ title, items, pathname, onNav }: {
   title: string;
@@ -161,11 +166,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState(false);
   const [authError, setAuthError] = useState("");
   const [sessionVersion, setSessionVersion] = useState(0);
-  useEffect(() => { const changed=()=>{setAuthed(false);setSessionVersion(v=>v+1);}; window.addEventListener("legacylock-session-changed",changed); return ()=>window.removeEventListener("legacylock-session-changed",changed); }, []);
+  const verifiedSession = useRef<VerifiedSession | null>(null);
+  useEffect(() => {
+    const changed = () => {
+      verifiedSession.current = null;
+      setAuthed(false);
+      setSessionVersion((version) => version + 1);
+    };
+    window.addEventListener("legacylock-session-changed", changed);
+    return () => window.removeEventListener("legacylock-session-changed", changed);
+  }, []);
   useEffect(() => {
     const expired = (event: Event) => {
       const principal = (event as CustomEvent<"owner" | "beneficiary">).detail;
       if (principal !== (pathname === "/recovery" ? "beneficiary" : "owner")) return;
+      verifiedSession.current = null;
       setAuthed(false);
       router.replace(pathname === "/recovery" ? "/access/login" : "/");
     };
@@ -174,23 +189,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [pathname, router]);
   const [principal, setPrincipal] = useState<"owner" | "beneficiary">("owner");
   const previousPath = useRef(pathname);
+  const routePrincipal = pathname === "/recovery" ? "beneficiary" : "owner";
 
   useEffect(() => {
     const leavingSetup = previousPath.current === "/vault/setup" && pathname !== "/vault/setup";
     previousPath.current = pathname;
     if (leavingSetup && isUnlocked()) lock();
-    if (isPublic) return;
+    if (isPublic) {
+      verifiedSession.current = null;
+      setAuthed(false);
+      return;
+    }
+    // The root layout survives client navigation. An owner tab change does not
+    // change the session, so keep the shell and destination page visible.
+    if (
+      verifiedSession.current?.principal === routePrincipal &&
+      verifiedSession.current.version === sessionVersion
+    ) return;
     let cancelled = false;
     setAuthed(false);
     setAuthError("");
     (async () => {
-      if (pathname !== "/recovery") try {
+      if (routePrincipal === "owner") try {
         const [me, material] = await Promise.all([
           getMe(),
           getCryptoMaterial().catch(() => null),
         ]);
         if (!cancelled) {
           bindVault(`owner:${me.id}`, material?.material_revision??0);
+          verifiedSession.current = { principal: "owner", id: me.id, version: sessionVersion };
           setPrincipal("owner");
           setAuthed(true);
         }
@@ -202,11 +229,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         }
         // Not an owner — fall through to beneficiary check.
       }
-      if (pathname === "/recovery") {
+      if (routePrincipal === "beneficiary") {
         try {
           const status=await getAccessStatus();
           if (!cancelled) {
             bindVault(`beneficiary:${status.beneficiary_id}`,status.material_revision);
+            verifiedSession.current = {
+              principal: "beneficiary", id: status.beneficiary_id, version: sessionVersion,
+            };
             setPrincipal("beneficiary");
             setAuthed(true);
           }
@@ -224,14 +254,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [pathname, isPublic, router, sessionVersion, lock]);
+  }, [pathname, isPublic, routePrincipal, router, sessionVersion, lock]);
 
   useEffect(() => {
-    if (isPublic || !authed || principal !== "owner") return;
-    setStatus(null);
+    if (isPublic || !authed || principal !== "owner") {
+      setStatus(null);
+      return;
+    }
+    let cancelled = false;
     getVaultStatus()
-      .then((s) => setStatus(s.status))
-      .catch(() => {});
+      .then((s) => { if (!cancelled) setStatus(s.status); })
+      .catch(() => { if (!cancelled) setStatus(null); });
+    return () => { cancelled = true; };
   }, [pathname, isPublic, authed, principal]);
 
   useEffect(() => {
@@ -241,13 +275,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setHeartbeatActive(null);
       return;
     }
-    setVaultInitialized(null);
-    setRecoveryReady(null);
-    setHeartbeatActive(null);
     let cancelled = false;
     getReadiness()
       .then((evidence) => {
         if (!cancelled) {
+          const owner = verifiedSession.current;
+          if (owner?.principal === "owner" && typeof evidence.material_revision === "number") {
+            bindVault(`owner:${owner.id}`, evidence.material_revision);
+          }
           setVaultInitialized(evidence.initialized);
           setRecoveryReady(
             evidence.initialized
@@ -294,7 +329,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  if (!authed) {
+  if (
+    !authed ||
+    verifiedSession.current?.principal !== routePrincipal ||
+    verifiedSession.current.version !== sessionVersion
+  ) {
     if (!authError && pathname === "/home") return <HomeLoading />;
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center text-sm text-muted">
