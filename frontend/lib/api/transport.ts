@@ -97,6 +97,36 @@ export async function rawFetch(path: string, init: RequestInit = {}): Promise<Re
   });
 }
 
+/** Check for an owner cookie on the public entry page without expiring other tabs. */
+export async function probeOwnerSession(): Promise<boolean> {
+  const before = currentEpoch();
+  const me = await rawFetch("/auth/me");
+  if (before !== currentEpoch()) return false;
+  if (me.ok) return true;
+  if (me.status !== 401) return false;
+
+  // A refresh cookie may still be valid after the access cookie expires. Use
+  // the same browser lock as ownerFetch so another tab cannot rotate it first.
+  const refresh = async () => {
+    const current = await rawFetch("/auth/me");
+    if (current.ok) return true;
+    const response = await rawFetch("/auth/refresh", { method: "POST" });
+    return response.ok;
+  };
+  try {
+    const refreshed = typeof navigator !== "undefined" && navigator.locks
+      ? await navigator.locks.request(
+        "legacylock:/auth/refresh", { signal: AbortSignal.timeout(15000) }, refresh,
+      )
+      : await refresh();
+    if (!refreshed || before !== currentEpoch()) return false;
+    const verified = await rawFetch("/auth/me");
+    return verified.ok && before === currentEpoch();
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithRefresh<T>(
   path: string,
   init: RequestInit,
