@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Eye,
   EyeOff,
@@ -12,11 +12,12 @@ import {
 } from "lucide-react";
 import { login } from "../lib/api";
 import { resendVerification } from "../lib/api/public";
-import { ApiError } from "../lib/api/transport";
+import { ApiError, probeOwnerSession } from "../lib/api/transport";
 import { HomeLoading } from "../components/home-loading";
 
 export default function LoginPage() {
   const router = useRouter();
+  const submitting = useRef(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -26,8 +27,31 @@ export default function LoginPage() {
   const [unverified, setUnverified] = useState(false);
   const [resent, setResent] = useState(false);
 
+  useEffect(() => {
+    let active = true;
+    let probeVersion = 0;
+    const checkExistingSession = async () => {
+      const version = ++probeVersion;
+      try {
+        const signedIn = await probeOwnerSession();
+        if (signedIn && active && version === probeVersion && !submitting.current) {
+          router.replace("/home");
+        }
+      } catch {
+        // An anonymous or expired session stays on the sign-in page.
+      }
+    };
+    void checkExistingSession();
+    window.addEventListener("legacylock-session-changed", checkExistingSession);
+    return () => {
+      active = false;
+      window.removeEventListener("legacylock-session-changed", checkExistingSession);
+    };
+  }, [router]);
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
+    submitting.current = true;
     setErr("");
     setUnverified(false);
     setBusy(true);
@@ -45,6 +69,7 @@ export default function LoginPage() {
         setErr("Invalid email or password.");
       }
       setBusy(false);
+      submitting.current = false;
       return;
     }
     setPassword("");
