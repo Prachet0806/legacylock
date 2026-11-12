@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("owner tab changes keep the shell visible without another auth probe", async ({ page }) => {
   const calls = new Map<string, number>();
+  let ownerSessionValid = true;
   let holdPeople = false;
   let releasePeople: (() => void) | undefined;
   const peopleGate = new Promise<void>((resolve) => { releasePeople = resolve; });
@@ -9,6 +10,12 @@ test("owner tab changes keep the shell visible without another auth probe", asyn
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     calls.set(path, (calls.get(path) ?? 0) + 1);
+    if (!ownerSessionValid && (path === "/api/auth/me" || path === "/api/auth/refresh")) {
+      await route.fulfill({
+        status: 401, contentType: "application/json", body: '{"detail":"Not authenticated"}',
+      });
+      return;
+    }
     if (path === "/api/beneficiaries" && holdPeople) await peopleGate;
     const responses: Record<string, object> = {
       "/api/auth/me": { id: 1, email: "owner@example.com" },
@@ -65,6 +72,7 @@ test("owner tab changes keep the shell visible without another auth probe", asyn
 
     await page.evaluate(() => window.dispatchEvent(new Event("legacylock-session-changed")));
     await expect.poll(() => calls.get("/api/auth/me") ?? 0).toBe(meBefore + 1);
+    ownerSessionValid = false;
     await page.evaluate(() => window.dispatchEvent(
       new CustomEvent("legacylock-session-expired", { detail: "owner" }),
     ));
