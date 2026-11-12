@@ -2,6 +2,8 @@
 
 import base64
 
+from fastapi.testclient import TestClient
+
 _WMEK = base64.b64encode(b"0" * 40).decode()
 WIPE_BODY = {"password": "TestPass123!Long", "confirm": True}
 TRIGGER_BODY = {"password": "TestPass123!Long", "confirm": True}
@@ -15,12 +17,12 @@ class TestHealth:
         assert res.status_code == 200
         assert res.json()["status"] == "ok"
 
-    def test_health_head_no_auth(self, client):
+    def test_health_head_no_auth(self, client: TestClient) -> None:
         res = client.head("/health")
         assert res.status_code == 200
         assert res.content == b""
 
-    def test_health_head_allowed_by_cors(self, client):
+    def test_health_head_allowed_by_cors(self, client: TestClient) -> None:
         res = client.options(
             "/health",
             headers={

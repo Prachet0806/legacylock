@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
-from typing import Callable, TypeVar
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,18 +41,46 @@ setup_logging()
 logger = logging.getLogger("legacylock")
 
 HEARTBEAT_CHECK_INTERVAL = int(os.environ.get("HEARTBEAT_CHECK_INTERVAL", "60"))
-T = TypeVar("T")
 
 
-def _startup_checked(check: str, operation: Callable[[], T]) -> T:
+def _startup_checked[T](check: str, operation: Callable[[], T]) -> T:
     """Log a fixed startup stage without exposing exception text or key material."""
     try:
         return operation()
     except Exception as exc:
         # The operational log filter intentionally redacts messages containing
         # words such as "jwt" and "secret". Keep check names free of those words.
-        logger.error("STARTUP_CHECK_FAILED check=%s error_type=%s", check, type(exc).__name__)
+        logger.error(  # noqa: TRY400 - exception details may contain key material
+            "STARTUP_CHECK_FAILED check=%s error_type=%s", check, type(exc).__name__
+        )
         raise
+
+
+def _validate_signing_keys() -> None:
+    """Check both signing keys and their pairing before accepting traffic."""
+    from cryptography.hazmat.primitives import serialization
+
+    from services.auth import _get_jwt_private_key, _get_jwt_public_key
+
+    private_pem = _startup_checked("signing_private_load", _get_jwt_private_key)
+    public_pem = _startup_checked("signing_public_load", _get_jwt_public_key)
+    private = _startup_checked(
+        "signing_private_parse",
+        lambda: serialization.load_pem_private_key(private_pem.encode(), password=None),
+    )
+    public = _startup_checked(
+        "signing_public_parse",
+        lambda: serialization.load_pem_public_key(public_pem.encode()),
+    )
+
+    def check_pair() -> None:
+        if (
+            private.key_size < 2048
+            or private.public_key().public_numbers() != public.public_numbers()
+        ):
+            raise RuntimeError("JWT RSA key pair is invalid or mismatched")
+
+    _startup_checked("signing_pair", check_pair)
 
 
 async def _record_failure(component: str, exc: Exception) -> None:
@@ -117,26 +144,7 @@ async def _delivery_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Fail closed on bad keys before serving traffic (invalidates old tokens)
-    from services.auth import _get_jwt_private_key, _get_jwt_public_key
-
-    private_pem = _startup_checked("signing_private_load", _get_jwt_private_key)
-    public_pem = _startup_checked("signing_public_load", _get_jwt_public_key)
-    from cryptography.hazmat.primitives import serialization
-
-    private = _startup_checked(
-        "signing_private_parse",
-        lambda: serialization.load_pem_private_key(private_pem.encode(), password=None),
-    )
-    public = _startup_checked(
-        "signing_public_parse",
-        lambda: serialization.load_pem_public_key(public_pem.encode()),
-    )
-    try:
-        if private.key_size < 2048 or private.public_key().public_numbers() != public.public_numbers():
-            raise RuntimeError("JWT RSA key pair is invalid or mismatched")
-    except Exception as exc:
-        logger.error("STARTUP_CHECK_FAILED check=signing_pair error_type=%s", type(exc).__name__)
-        raise
+    _validate_signing_keys()
     if settings.environment == "production":
         # Deployment discipline: X-Forwarded-For is trusted ONLY via
         # TRUSTED_PROXIES. An empty list behind a proxy makes client IPs

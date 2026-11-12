@@ -31,6 +31,7 @@ def _production_settings(**overrides: object) -> Settings:
         frontend_url="https://app.legacylock.test",
         allowed_origins="https://app.legacylock.test",
         allowed_hosts="api.legacylock.test",
+        operations_token="",
         resend_api_key="re_fixture_only",
         notification_email_from="noreply@legacylock.test",
     )
@@ -201,10 +202,12 @@ def test_startup_failure_reports_stage_without_logging_exception_detail(
     # Alembic's test setup disables previously registered loggers.
     monkeypatch.setattr(logger, "disabled", False)
     monkeypatch.setattr(auth_service, "_get_jwt_private_key", fail_private_load)
-    with caplog.at_level(logging.ERROR, logger="legacylock"):
-        with pytest.raises(RuntimeError, match="private fixture value"):
-            with TestClient(app):
-                pass
+    with (
+        caplog.at_level(logging.ERROR, logger="legacylock"),
+        pytest.raises(RuntimeError, match="private fixture value"),
+        TestClient(app),
+    ):
+        pass
     assert "STARTUP_CHECK_FAILED check=signing_private_load error_type=RuntimeError" in caplog.text
     assert "private fixture value" not in caplog.text
     assert "[REDACTED]" not in caplog.text
