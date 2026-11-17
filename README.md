@@ -1,5 +1,7 @@
 # LegacyLock
 
+**Live app:** [legacylock.tech](https://legacylock.tech)
+
 LegacyLock encrypts secret messages in the browser and permits enrolled beneficiaries to fetch ciphertext after an owner-authorized or heartbeat release. Recovery requires separately held Shamir shares. Login passwords reach the authentication service; vault passphrases, plaintext, unwrapped vault/message keys and recovery shares do not reach application APIs. Labels, categories, email addresses, assignments and timing remain server-visible metadata. A malicious delivery of application JavaScript is outside the protection offered by encrypted database storage.
 
 Current behavior and development commands are below. Hosting, cutover, and remaining release gates are in [DEPLOY.md](DEPLOY.md).
@@ -16,21 +18,21 @@ Current behavior and development commands are below. Hosting, cutover, and remai
 
 ## Runtime and development
 
-Declared build targets: Python 3.12.14, Node 22.23.3, Next 15.5.28, React 18.3.1 and PostgreSQL 17. Backend dependencies use `requirements.lock.txt` as the constraints source; frontend installs use `package-lock.json`. Run dependency audits before release.
+Declared build targets: Python 3.12.14 (pinned in [`.python-version`](.python-version), CI and the backend image), Node 24.22.2, Next 15.5.28, React 18.3.1 and PostgreSQL 17. Backend dependencies use `requirements.lock.txt` as the constraints source; frontend installs use `package-lock.json`. Run dependency audits before release.
 
-Copy `.env.example` into your local environment and configure a development database and JWT pair. Backend settings load `../.env` when run from `backend/`. Generate development keys only; never reuse them in production:
+Copy `.env.example` into your local environment and configure a development database and JWT pair. Backend settings load `../.env` when run from `backend/`. Generate development keys only; never reuse them in production.
 
 The root `.env` is for a backend run directly or for local Docker Compose. The frontend uses `frontend/.env.local`; copy `frontend/.env.local.example` there for local development. Browser API calls stay at `/api`, and `API_UPSTREAM` points Next to the backend. The local Compose file forwards backend settings from the root `.env`, including `REGISTRATION_INVITE_CODE`. For hosted services, use the separate inventories under `deploy/` and the [deployment contract](DEPLOY.md); keep credentials in the service secret stores.
 
 The selected hosted footprint is Vercel frontend → Render Free API → Neon Free PostgreSQL. The API runs the single-process scheduler, so this topology has no separate worker. Local Compose remains a disposable PostgreSQL development database. At the repository root, Neon CLI `neon init`/`neon env pull` writes `DATABASE_URL` and `DATABASE_URL_UNPOOLED` to the ignored `.env`; the backend loads `DATABASE_URL` and normalizes Neon’s `postgresql://` URL to SQLAlchemy’s `psycopg` driver. Set the Render service's `DATABASE_URL` to Neon’s direct/unpooled endpoint and use that direct endpoint for Alembic migrations. The scheduler holds a session-level advisory lock while it runs; Neon transaction pooling does not support session-level advisory locks, so a hostname containing `-pooler` is incompatible with this topology. Production preflight rejects a Neon pooler hostname when `TASK_MODE=single_process_demo`. Keep connection strings server-side; never put them in `NEXT_PUBLIC_*` or another browser variable. See [DEPLOY.md](DEPLOY.md) for the Free-tier limits, migration procedure, monitoring, and optional paid-worker alternative.
+
+Before running the backend commands, create and activate `backend/.venv` with Python 3.12.14 from the repository root. Windows PowerShell: `py -3.12 -m venv backend/.venv`, then `./backend/.venv/Scripts/Activate.ps1`. macOS/Linux: `python3.12 -m venv backend/.venv`, then `source backend/.venv/bin/activate`. Install Python 3.12 first if `py -3.12` or `python3.12` is unavailable:
 
 ```sh
 mkdir -p backend/keys
 openssl genrsa -out backend/keys/jwt_private.pem 2048
 openssl rsa -in backend/keys/jwt_private.pem -pubout -out backend/keys/jwt_public.pem
 cd backend
-python -m venv .venv
-# Activate .venv (Windows: .venv/Scripts/Activate.ps1)
 python -m pip install -r requirements-dev.txt
 alembic upgrade head
 python seed_dev_user.py owner@example.com DevPassword123456

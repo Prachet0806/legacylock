@@ -4,6 +4,7 @@ test("finalizing setup binds the new revision before opening the vault", async (
   let material: Record<string, unknown> = { material_revision: 0, wrapped_vmk: null };
   let finalized = false;
   let authChecks = 0;
+  const materialRevisionsAfterFinalization: number[] = [];
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
@@ -12,6 +13,7 @@ test("finalizing setup binds the new revision before opening the vault", async (
       authChecks++;
       body = { id: 1, email: "owner@example.com" };
     } else if (path === "/api/vault/crypto-material" && method === "GET") {
+      if (finalized) materialRevisionsAfterFinalization.push(Number(material.material_revision));
       body = material;
     } else if (path === "/api/vault/recovery-ceremony" && method === "POST") {
       const request = route.request().postDataJSON();
@@ -51,4 +53,5 @@ test("finalizing setup binds the new revision before opening the vault", async (
   await expect(page.getByRole("button", { name: "Unlock vault", exact: true })).toBeVisible();
   expect(finalized).toBe(true);
   expect(authChecks).toBeGreaterThan(beforeFinalization);
+  expect(materialRevisionsAfterFinalization).toContain(1);
 });

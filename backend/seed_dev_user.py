@@ -2,7 +2,7 @@
 
 Usage (from repo root, with Postgres running and .env configured):
     cd backend
-    venv\\Scripts\\python seed_dev_user.py user@example.com <password>
+    .venv\\Scripts\\python seed_dev_user.py user@example.com <password>
 
 Refuses to run when ENVIRONMENT=production. Safe to re-run (idempotent).
 """

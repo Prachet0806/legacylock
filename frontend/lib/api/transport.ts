@@ -1,5 +1,11 @@
 // Shared transport: cookie-authenticated fetch + safe JSON parsing.
-// No session logic here — see owner.ts / beneficiary.ts / public.ts.
+// Auth endpoints are selected by owner.ts / beneficiary.ts / public.ts.
+// Freshness policy: completed API responses are never cached here. Identical
+// owner GETs share only their in-flight request; writes discard those flights.
+// The shell retains verified identity and its vault binding across owner route
+// changes, but revalidates mutable status/readiness/heartbeat on navigation.
+// Page data is reloaded by its page after a write. Session or material changes
+// call sessionChanged(), which locks the key and forces identity verification.
 //
 // Same-origin by default: API calls go to relative /api/* and the edge
 // (or Next dev rewrites) strips the prefix and forwards to the backend.

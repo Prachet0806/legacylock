@@ -261,6 +261,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setStatus(null);
       return;
     }
+    // Status is mutable (trigger/check-in). Revalidate on navigation; an
+    // in-page check-in updates this shell state directly below.
     let cancelled = false;
     getVaultStatus()
       .then((s) => { if (!cancelled) setStatus(s.status); })
@@ -275,6 +277,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setHeartbeatActive(null);
       return;
     }
+    // Readiness and heartbeat affect security UI and can change after setup,
+    // re-sharing, arming, or check-in. Revalidate on every owner navigation.
+    // transport.ts only shares overlapping requests; it retains no result.
     let cancelled = false;
     getReadiness()
       .then((evidence) => {
