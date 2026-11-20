@@ -1,5 +1,11 @@
 // Shared transport: cookie-authenticated fetch + safe JSON parsing.
-// No session logic here — see owner.ts / beneficiary.ts / public.ts.
+// Auth endpoints are selected by owner.ts / beneficiary.ts / public.ts.
+// Freshness policy: completed API responses are never cached here. Identical
+// owner GETs share only their in-flight request; writes discard those flights.
+// The shell retains verified identity and its vault binding across owner route
+// changes, but revalidates mutable status/readiness/heartbeat on navigation.
+// Page data is reloaded by its page after a write. Session or material changes
+// call sessionChanged(), which locks the key and forces identity verification.
 //
 // Same-origin by default: API calls go to relative /api/* and the edge
 // (or Next dev rewrites) strips the prefix and forwards to the backend.
@@ -8,6 +14,8 @@
 import { assertEpoch, currentEpoch, lockVault } from "../crypto-session";
 const API_URL = (process.env.NEXT_PUBLIC_API_URL?.trim() || "/api").replace(/\/$/, "");
 const flights = new Map<string, Promise<void>>();
+const ownerReadFlights = new Map<string, Promise<unknown>>();
+let ownerDataGeneration = 0;
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -175,7 +183,22 @@ async function fetchWithRefresh<T>(
 
 /** Owner session: silent retry via the owner refresh cookie. */
 export function ownerFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  return fetchWithRefresh<T>(path, init, "/auth/refresh");
+  // Coalesce only identical plain GETs in the same session. Results are not
+  // retained after completion, so each later navigation still gets fresh data.
+  if ((init.method ?? "GET").toUpperCase() !== "GET") {
+    ownerDataGeneration++;
+    ownerReadFlights.clear();
+    return fetchWithRefresh<T>(path, init, "/auth/refresh");
+  }
+  if (Object.keys(init).length !== 0) return fetchWithRefresh<T>(path, init, "/auth/refresh");
+  const key = `${currentEpoch()}:${ownerDataGeneration}:${path}`;
+  const existing = ownerReadFlights.get(key);
+  if (existing) return existing as Promise<T>;
+  const request = fetchWithRefresh<T>(path, init, "/auth/refresh").finally(() => {
+    if (ownerReadFlights.get(key) === request) ownerReadFlights.delete(key);
+  });
+  ownerReadFlights.set(key, request);
+  return request;
 }
 
 /** Beneficiary session: silent retry via the beneficiary refresh cookie.

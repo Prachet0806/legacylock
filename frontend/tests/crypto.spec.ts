@@ -50,6 +50,23 @@ test("principal change locks the key and invalidates in-flight cryptography", as
   await expect(pending).rejects.toThrow(/Session changed/);
 });
 
+test("a new material revision or owner identity cannot retain an unlocked vault", async () => {
+  session.bindVault("owner:one", 1);
+  await session.setupVault("revision-fixture-passphrase-1234");
+  expect(session.isUnlocked()).toBe(true);
+  session.bindVault("owner:one", 2);
+  expect(session.materialRevision()).toBe(2);
+  expect(session.isUnlocked()).toBe(false);
+  await expect(session.encrypt("old key")).rejects.toThrow(/locked/);
+
+  await session.setupVault("second-revision-passphrase-1234");
+  expect(session.isUnlocked()).toBe(true);
+  session.bindVault("owner:two", 2);
+  expect(session.materialRevision()).toBe(2);
+  expect(session.isUnlocked()).toBe(false);
+  await expect(session.encrypt("previous owner key")).rejects.toThrow(/locked/);
+});
+
 test("hidden-tab deadline locks even when its timer never runs", async () => {
   const original = Date.now;
   await session.setupVault("hidden-deadline-test-passphrase");

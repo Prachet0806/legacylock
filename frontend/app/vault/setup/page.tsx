@@ -15,6 +15,7 @@ import {
 import { clsx } from "clsx";
 import { assertEpoch, currentEpoch, isUnlocked, subscribe, CRYPTO_VERSION, lockVault, setupVault } from "../../../lib/crypto-session";
 import { postRecoveryCeremony, getCryptoMaterial, finalizeCeremony } from "../../../lib/client";
+import { sessionChanged } from "../../../lib/api/transport";
 import { CopyButton, Spinner, Stepper } from "../../../components/ui";
 import { useToast } from "../../../components/toast";
 
@@ -161,7 +162,7 @@ export default function VaultSetupPage() {
     setBusy(true);
     try {
       await finalizeCeremony(ceremonyId, stored.map((ok, i) => ok ? i + 1 : 0).filter(Boolean));
-      setShares([]); setStored([]); lockVault(); router.push("/vault");
+      setShares([]); setStored([]); sessionChanged(); router.push("/vault");
     } catch (e) { setErr(e instanceof Error ? e.message : "Finalization failed"); }
     finally { setBusy(false); }
   }

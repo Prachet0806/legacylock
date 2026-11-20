@@ -169,15 +169,17 @@ body:has(main.public-auth) { background: rgb(var(--bg)); }
 }
 .app-sidebar { position: sticky; top: 0; height: 100svh; }
 [data-theme="light"] .app-sidebar {
-  --bg: var(--navy);
-  --raised: 37 51 78;
-  --border: 72 84 106;
-  --text: var(--cream);
-  --muted: 207 205 198;
-  --faint: 167 175 190;
-  --accent: var(--gold);
-  --ring: var(--gold);
-  color-scheme: dark;
+  --bg: 250 247 240;
+  --surface: var(--cream);
+  --raised: 232 223 207;
+  --border: 207 195 174;
+  --text: var(--navy);
+  --muted: 70 77 88;
+  --faint: 97 103 112;
+  --accent: 119 82 20;
+  --ring: 119 82 20;
+  --success: 35 108 70;
+  color-scheme: light;
   color: rgb(var(--text));
 }
 .app-sidebar > a:first-child { min-height: 40px; }
