@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start -p 3000",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test",
     "audit": "node scripts/audit.cjs"
@@ -14,9 +14,9 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "lucide-react": "^0.436.0",
-    "next": "15.5.29",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   },
   "overrides": {
     "postcss": "^8.5.28",
@@ -30,9 +30,9 @@
   },
   "devDependencies": {
     "@playwright/test": "1.64.0",
-    "@types/node": "20.12.0",
-    "@types/react": "18.3.0",
-    "@types/react-dom": "18.3.0",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "autoprefixer": "^10.4.20",
     "eslint": "8.57.0",
     "eslint-config-next": "15.5.29",

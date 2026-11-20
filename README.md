@@ -18,7 +18,7 @@ Current behavior and development commands are below. Hosting, cutover, and remai
 
 ## Runtime and development
 
-Declared build targets: Python 3.12.14 (pinned in [`.python-version`](.python-version), CI and the backend image), Node 24.22.2, Next 15.5.29, React 18.3.1 and PostgreSQL 17. Backend dependencies use `requirements.lock.txt` as the constraints source; frontend installs use `package-lock.json`. Run dependency audits before release.
+Declared build targets: Python 3.12.14 (pinned in [`.python-version`](.python-version), CI and the backend image), Node 24.22.2, Next 16.4.6, React 19.3.1 and PostgreSQL 17. Backend dependencies use `requirements.lock.txt` as the constraints source; frontend installs use `package-lock.json`. Run dependency audits before release.
 
 Copy `.env.example` into your local environment and configure a development database and JWT pair. Backend settings load `../.env` when run from `backend/`. Generate development keys only; never reuse them in production.
 
